@@ -9,6 +9,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 
 class MainActivity : Activity() {
@@ -27,45 +28,87 @@ class MainActivity : Activity() {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.parseColor("#CC111A2E"))
             setPadding((8 * d).toInt(), (6 * d).toInt(), (8 * d).toInt(), (6 * d).toInt())
         }
+        val scroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            setBackgroundColor(Color.parseColor("#CC111A2E"))
+            addView(bar)
+        }
 
-        fun addBtn(label: String, onClick: () -> Unit) {
+        val penButtons = ArrayList<Button>()
+        var eraserBtn: Button? = null
+
+        fun refresh() {
+            for (i in penButtons.indices) {
+                penButtons[i].alpha = if (!draw.eraserMode && draw.pen.ordinal == i) 1f else 0.5f
+            }
+            eraserBtn?.alpha = if (draw.eraserMode) 1f else 0.5f
+        }
+
+        fun smallBtn(label: String): Button {
             val b = Button(this)
             b.text = label
-            b.setOnClickListener { onClick() }
+            b.textSize = 14f
+            b.minWidth = 0
+            b.minimumWidth = 0
+            return b
+        }
+
+        fun penBtn(label: String, p: Pen) {
+            val b = smallBtn(label)
+            b.setOnClickListener { draw.selectPen(p); refresh() }
+            penButtons.add(b)
             bar.addView(b)
         }
 
-        addBtn("قلم") { draw.eraserMode = false }
-        addBtn("ممحاة") { draw.eraserMode = true }
-        addBtn("مسح الكل") { draw.clearAll() }
+        // نفس ترتيب Pen
+        penBtn("حبر", Pen.INK)
+        penBtn("رصاص", Pen.PENCIL)
+        penBtn("ماركر", Pen.MARKER)
+        penBtn("تمييز", Pen.HIGHLIGHTER)
+        penBtn("ريشة", Pen.BRUSH)
 
-        val colors = intArrayOf(
+        val eb = smallBtn("ممحاة")
+        eb.setOnClickListener { draw.eraserMode = true; refresh() }
+        eraserBtn = eb
+        bar.addView(eb)
+
+        val sizeBtn = smallBtn("سُمك")
+        sizeBtn.setOnClickListener {
+            val s = draw.cycleSize()
+            sizeBtn.text = "سُمك " + (s * 100).toInt() + "%"
+        }
+        bar.addView(sizeBtn)
+
+        val clearBtn = smallBtn("مسح الكل")
+        clearBtn.setOnClickListener { draw.clearAll() }
+        bar.addView(clearBtn)
+
+        val swatches = intArrayOf(
             Color.BLACK,
             0xFFE53935.toInt(),
             0xFF1E88E5.toInt(),
-            0xFF43A047.toInt()
+            0xFF43A047.toInt(),
+            0xFFFFEB3B.toInt(),
+            0xFF8E24AA.toInt()
         )
-        for (c in colors) {
+        for (c in swatches) {
             val sw = View(this)
             sw.setBackgroundColor(c)
-            sw.setOnClickListener {
-                draw.penColor = c
-                draw.eraserMode = false
-            }
-            val lp = LinearLayout.LayoutParams((40 * d).toInt(), (40 * d).toInt())
-            lp.setMargins((8 * d).toInt(), 0, (4 * d).toInt(), 0)
+            sw.setOnClickListener { draw.setColor(c) }
+            val lp = LinearLayout.LayoutParams((36 * d).toInt(), (36 * d).toInt())
+            lp.setMargins((8 * d).toInt(), 0, (2 * d).toInt(), 0)
             bar.addView(sw, lp)
         }
 
+        refresh()
         root.addView(
-            bar,
+            scroll,
             FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                Gravity.BOTTOM
             )
         )
         setContentView(root)
