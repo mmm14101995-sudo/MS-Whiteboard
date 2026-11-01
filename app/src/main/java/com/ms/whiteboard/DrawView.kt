@@ -22,8 +22,14 @@ enum class Pen { INK, PENCIL, MARKER, HIGHLIGHTER, BRUSH }
 
 class DrawView(context: Context) : View(context) {
 
-    // بيتنادى كل ما الرسم يتغير، عشان الحفظ التلقائي
     var onChanged: (() -> Unit)? = null
+    var onHistoryChanged: (() -> Unit)? = null
+
+    private class Action(val added: List<Stroke>, val removed: List<Stroke>)
+    private val undoStack = ArrayList<Action>()
+    private val redoStack = ArrayList<Action>()
+    val canUndo: Boolean get() = undoStack.isNotEmpty()
+    val canRedo: Boolean get() = redoStack.isNotEmpty()
 
     private var bitmap: Bitmap? = null
     private var bmpCanvas: Canvas? = null
@@ -50,13 +56,15 @@ class DrawView(context: Context) : View(context) {
     private var sizeIndex = 1
     private val widthScale: Float get() = sizes[sizeIndex]
 
-    // ---- الخطوط (دي اللي بتتحفظ) ----
     private val strokes = ArrayList<Stroke>()
     private var inkStroke: Stroke? = null
     private var eraseStroke: Stroke? = null
-    private var coordW = 0   // مقاس الشاشة اللي الإحداثيات متسجلة بيه
+    private var coordW = 0
     private var coordH = 0
     private val pencilShaders = HashMap<Int, BitmapShader>()
+
+    private var paperColor = 0xFFFFFFFF.toInt()
+    private val gridPaint = Paint().apply { style = Paint.Style.STROKE; strokeWidth = density }
 
     private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -104,14 +112,55 @@ class DrawView(context: Context) : View(context) {
         return widthScale
     }
 
+    fun setPaper(paper: Int, grid: Int) {
+        paperColor = paper
+        gridPaint.color = grid
+        invalidate()
+    }
+
     fun clearAll() {
+        if (strokes.isEmpty()) return
+        val old = ArrayList(strokes)
         strokes.clear()
         inkStroke = null
         eraseStroke = null
         hlActive = false
         bitmap?.eraseColor(Color.TRANSPARENT)
+        record(emptyList(), old)
         invalidate()
         onChanged?.invoke()
+    }
+
+    // ---- التراجع والإعادة ----
+    private fun record(added: List<Stroke>, removed: List<Stroke>) {
+        undoStack.add(Action(added, removed))
+        redoStack.clear()
+        onHistoryChanged?.invoke()
+    }
+
+    fun undo() {
+        if (undoStack.isEmpty()) return
+        val a = undoStack.removeAt(undoStack.size - 1)
+        strokes.removeAll(a.added)
+        strokes.addAll(a.removed)
+        redoStack.add(a)
+        afterHistory()
+    }
+
+    fun redo() {
+        if (redoStack.isEmpty()) return
+        val a = redoStack.removeAt(redoStack.size - 1)
+        strokes.removeAll(a.removed)
+        strokes.addAll(a.added)
+        undoStack.add(a)
+        afterHistory()
+    }
+
+    private fun afterHistory() {
+        if (width > 0 && height > 0) layoutTo(width, height)
+        invalidate()
+        onChanged?.invoke()
+        onHistoryChanged?.invoke()
     }
 
     // ---- الحفظ والاسترجاع ----
@@ -121,13 +170,14 @@ class DrawView(context: Context) : View(context) {
         val d = BoardStore.fromJson(json) ?: return
         strokes.clear()
         strokes.addAll(d.strokes)
+        undoStack.clear()
+        redoStack.clear()
         coordW = d.w
         coordH = d.h
         if (width > 0 && height > 0) layoutTo(width, height)
         invalidate()
     }
 
-    // بيعيد رسم كل الخطوط على الـ bitmap، ويعدّل الإحداثيات لو المقاس اتغير (لف الشاشة مثلًا)
     private fun layoutTo(w: Int, h: Int) {
         if (coordW > 0 && coordH > 0 && (coordW != w || coordH != h)) {
             val fx = w.toFloat() / coordW
@@ -155,7 +205,18 @@ class DrawView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(Color.WHITE)
+        canvas.drawColor(paperColor)
+        val step = 40f * density
+        var x = step
+        while (x < width) {
+            canvas.drawLine(x, 0f, x, height.toFloat(), gridPaint)
+            x += step
+        }
+        var y = step
+        while (y < height) {
+            canvas.drawLine(0f, y, width.toFloat(), y, gridPaint)
+            y += step
+        }
         bitmap?.let { canvas.drawBitmap(it, 0f, 0f, bitmapPaint) }
         if (hlActive) canvas.drawPath(hlPath, hlPaint)
     }
@@ -222,13 +283,14 @@ class DrawView(context: Context) : View(context) {
         }
     }
 
-    // ---- رسم الخط مباشرة (وقت الكتابة) ----
+    // ---- رسم الخط مباشرة وقت الكتابة ----
     private fun startStroke(x: Float, y: Float, pr: Float, t: Long) {
         val p0 = pen
         val color = colors[p0.ordinal]
         val s = Stroke(p0, color, false)
         strokes.add(s)
         inkStroke = s
+        record(listOf(s), emptyList())
         sx = x; sy = y; mx = x; my = y
         lastT = t
         sw = widthFor(pr, 1f, p0)
@@ -296,6 +358,7 @@ class DrawView(context: Context) : View(context) {
         val s = Stroke(pen, 0, true)
         strokes.add(s)
         eraseStroke = s
+        record(listOf(s), emptyList())
         ex = x; ey = y
         eraseTo(x, y, size)
     }
@@ -309,7 +372,7 @@ class DrawView(context: Context) : View(context) {
         eraseStroke?.add(x, y, size)
     }
 
-    // ---- إعادة رسم خط محفوظ (بنفس طريقة الرسم المباشر بالظبط) ----
+    // ---- إعادة رسم خط محفوظ (نفس طريقة الرسم المباشر) ----
     private fun drawStroke(c: Canvas, s: Stroke) {
         val n = s.size / 3
         if (n == 0) return
