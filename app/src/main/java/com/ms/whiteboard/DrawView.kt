@@ -45,9 +45,6 @@ class DrawView(context: Context) : View(context) {
     var penWidth = 7f * density
     var eraserMode = false
 
-    // الكتابة بالقلم بس. لو true الإصبع الصغير هيرسم كمان (للتجربة)
-    var fingerDraws = false
-
     // ---- التكبير والتحريك ----
     var zoom = 1f
         private set
@@ -65,9 +62,6 @@ class DrawView(context: Context) : View(context) {
     private var gTy = 0f
     private var gMx = 0f
     private var gMy = 0f
-    private var panId = -1
-    private var lastX = 0f
-    private var lastY = 0f
 
     var pen = Pen.INK
         private set
@@ -112,7 +106,9 @@ class DrawView(context: Context) : View(context) {
     }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
+    // الخط الحالي: بالقلم أو بالصبع
     private var stylusId = -1
+    private var stylusIsFinger = false
     private var eraseId = -1
     private var realPressure = true
     private var sx = 0f; private var sy = 0f
@@ -170,7 +166,6 @@ class DrawView(context: Context) : View(context) {
         onZoomChanged?.invoke(zoom)
     }
 
-    // ما نسيبش الصفحة تطلع بره الحدود
     private fun clampPan() {
         if (zoom <= 1f) {
             tx = 0f
@@ -346,7 +341,6 @@ class DrawView(context: Context) : View(context) {
         }
     }
 
-    // نحوّل المنطقة المتغيرة من إحداثيات الصفحة لإحداثيات الشاشة
     private fun flushDirty() {
         if (!hasDirty) return
         invalidate(
@@ -386,7 +380,6 @@ class DrawView(context: Context) : View(context) {
         val midX = (x + sx) / 2f
         val midY = (y + sy) / 2f
         val dt = max(1L, t - lastT).toFloat()
-        // السرعة بالشاشة مش بالصفحة، عشان الخط ميتغيرش مع التكبير
         val speedDp = hypot(x - sx, y - sy) * zoom / dt / density
         val speedF = (1.3f - speedDp * 0.5f).coerceIn(0.3f, 1.3f)
         val target = widthFor(pr, speedF, p0)
@@ -425,6 +418,23 @@ class DrawView(context: Context) : View(context) {
         addDirty(mx, my, sw + 2f); addDirty(sx, sy, sw + 2f)
         inkStroke = null
         onChanged?.invoke()
+    }
+
+    // لما إصبعين يتقفلوا على الشاشة والصبع كان بيرسم: نلغي الخط ده ونبدأ تكبير
+    private fun cancelFingerStroke() {
+        val s = inkStroke ?: return
+        strokes.remove(s)
+        if (undoStack.isNotEmpty() && undoStack.last().added.contains(s)) {
+            undoStack.removeAt(undoStack.size - 1)
+            onHistoryChanged?.invoke()
+        }
+        inkStroke = null
+        hlActive = false
+        hlPath.reset()
+        stylusId = -1
+        stylusIsFinger = false
+        if (width > 0 && height > 0) layoutTo(width, height)
+        invalidate()
     }
 
     // ---- الممحاة ----
@@ -517,7 +527,6 @@ class DrawView(context: Context) : View(context) {
             eraseId = -1
             onChanged?.invoke()
         }
-        panId = -1
         gesture = true
         gIdA = e.getPointerId(0)
         gIdB = e.getPointerId(1)
@@ -539,7 +548,6 @@ class DrawView(context: Context) : View(context) {
         val mx2 = (ax + bx) / 2f
         val my2 = (ay + by) / 2f
         val nz = (gScale * dist / gDist).coerceIn(minZoom, maxZoom)
-        // النقطة اللي كانت تحت المنتصف في البداية تفضل تحته
         val ox = (gMx - gTx) / gScale
         val oy = (gMy - gTy) / gScale
         zoom = nz
@@ -565,7 +573,7 @@ class DrawView(context: Context) : View(context) {
                         e.getTouchMajor(0) < palmSize && e.getTouchMajor(1) < palmSize
 
                 when {
-                    // القلم: يرسم أو يمسح لو الممحاة مفعلة
+                    // القلم: يرسم، أو يمسح لو الممحاة مفعلة
                     isStylus -> {
                         if (eraserMode) {
                             if (eraseId == -1) {
@@ -574,27 +582,27 @@ class DrawView(context: Context) : View(context) {
                             }
                         } else if (stylusId == -1) {
                             realPressure = true
+                            stylusIsFinger = false
                             stylusId = id
                             startStroke(cX(x), cY(y), e.getPressure(i), e.eventTime)
                         }
                     }
-                    // كف اليد: يمسح حتى وانت بتكتب
+                    // مساحة كبيرة زي الإيد: تمسح
                     major >= palmSize -> {
                         if (eraseId == -1) {
                             eraseId = id
                             startErase(cX(x), cY(y), eraseSize(major))
                         }
                     }
-                    // إصبعين صغيرين: تكبير وتحريك
-                    stylusId == -1 && bothSmall -> beginGesture(e)
-                    // إصبع واحد صغير وإنت مكبّر: تحريك
-                    zoom > 1f && panId == -1 && !gesture -> {
-                        panId = id
-                        lastX = x
-                        lastY = y
+                    // إصبعين صغيرين: تكبير وتحريك (ويلغي أي خط إصبع بدأ)
+                    bothSmall && !gesture && (stylusId == -1 || stylusIsFinger) -> {
+                        if (stylusIsFinger) cancelFingerStroke()
+                        beginGesture(e)
                     }
-                    fingerDraws && stylusId == -1 && !gesture -> {
+                    // إصبع صغير واحد: يكتب عادي
+                    !gesture && stylusId == -1 && e.pointerCount == 1 -> {
                         realPressure = false
+                        stylusIsFinger = true
                         stylusId = id
                         startStroke(cX(x), cY(y), 0.7f, e.eventTime)
                     }
@@ -624,16 +632,6 @@ class DrawView(context: Context) : View(context) {
                             }
                             eraseTo(cX(e.getX(i)), cY(e.getY(i)), eraseSize(e.getTouchMajor(i)))
                         }
-                        id == panId && !gesture -> {
-                            val nx = e.getX(i)
-                            val ny = e.getY(i)
-                            tx += nx - lastX
-                            ty += ny - lastY
-                            lastX = nx
-                            lastY = ny
-                            clampPan()
-                            invalidate()
-                        }
                     }
                 }
             }
@@ -643,12 +641,11 @@ class DrawView(context: Context) : View(context) {
                 if (id == stylusId) {
                     endStroke()
                     stylusId = -1
+                    stylusIsFinger = false
                 } else if (id == eraseId) {
                     eraseStroke = null
                     eraseId = -1
                     onChanged?.invoke()
-                } else if (id == panId) {
-                    panId = -1
                 }
                 if (gesture && (id == gIdA || id == gIdB)) gesture = false
             }
@@ -656,9 +653,9 @@ class DrawView(context: Context) : View(context) {
             MotionEvent.ACTION_CANCEL -> {
                 if (inkStroke != null) endStroke()
                 stylusId = -1
+                stylusIsFinger = false
                 eraseId = -1
                 eraseStroke = null
-                panId = -1
                 gesture = false
                 onChanged?.invoke()
             }
