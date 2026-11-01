@@ -2,7 +2,7 @@ package com.ms.whiteboard
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.graphics.Color
+import android.content.Context
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -23,31 +23,32 @@ class MainActivity : Activity() {
     private lateinit var dock: LinearLayout
     private lateinit var vScroll: ScrollView
     private lateinit var hScroll: HorizontalScrollView
-    private lateinit var eraserIcon: PenIconView
     private lateinit var store: BoardStore
+    private lateinit var undoIcon: GlyphView
+    private lateinit var redoIcon: GlyphView
+    private lateinit var eraserIcon: PenIconView
+    private lateinit var eraserWrap: FrameLayout
     private var projectId = "first"
     private val io = Executors.newSingleThreadExecutor()
     private var vertical = true
     private var popup: PopupWindow? = null
 
     private val penIcons = HashMap<Pen, PenIconView>()
+    private val penWraps = HashMap<Pen, FrameLayout>()
     private val swatches = ArrayList<Pair<Int, View>>()
     private var lastPen: Pen? = null
     private var lastTap = 0L
+    private var penColors = IntArray(5)
+    private val prefs by lazy { getSharedPreferences("pens", Context.MODE_PRIVATE) }
 
-    // لون كل قلم (بنفس ترتيب Pen)
-    private val penColors = intArrayOf(
-        0xFF000000.toInt(), 0xFF37474F.toInt(), 0xFF1E88E5.toInt(),
-        0xFFFFEB3B.toInt(), 0xFF212121.toInt()
-    )
     // الأربعة الظاهرين، والباقي في زرار +
     private val visible = mutableListOf(Pen.INK, Pen.PENCIL, Pen.MARKER, Pen.HIGHLIGHTER)
     private val hidden = mutableListOf(Pen.BRUSH)
 
-    private val quickColors = intArrayOf(
-        Color.BLACK, 0xFFE53935.toInt(), 0xFF1E88E5.toInt(),
-        0xFF43A047.toInt(), 0xFFFFEB3B.toInt(), 0xFF8E24AA.toInt()
-    )
+    private val dayPens = intArrayOf(0xFF000000.toInt(), 0xFF37474F.toInt(), 0xFF1E88E5.toInt(), 0xFFFFEB3B.toInt(), 0xFF212121.toInt())
+    private val nightPens = intArrayOf(0xFFF1F5F9.toInt(), 0xFFCBD5E1.toInt(), 0xFF38BDF8.toInt(), 0xFFFACC15.toInt(), 0xFFF1F5F9.toInt())
+    private val dayQuick = intArrayOf(0xFF000000.toInt(), 0xFFE53935.toInt(), 0xFF1E88E5.toInt(), 0xFF43A047.toInt(), 0xFFFFEB3B.toInt(), 0xFF8E24AA.toInt())
+    private val nightQuick = intArrayOf(0xFFFFFFFF.toInt(), 0xFFEF5350.toInt(), 0xFF38BDF8.toInt(), 0xFF66BB6A.toInt(), 0xFFFFEB3B.toInt(), 0xFFAB47BC.toInt())
     private val paletteColors = intArrayOf(
         0xFF0F172A.toInt(), 0xFF1E293B.toInt(), 0xFF475569.toInt(), 0xFF94A3B8.toInt(), 0xFFE2E8F0.toInt(), 0xFFFFFFFF.toInt(),
         0xFFDC2626.toInt(), 0xFFEF4444.toInt(), 0xFFF97316.toInt(), 0xFFF59E0B.toInt(), 0xFFFACC15.toInt(), 0xFF84CC16.toInt(),
@@ -56,25 +57,30 @@ class MainActivity : Activity() {
     )
 
     private fun dp(v: Int): Int = Theme.dp(this, v.toFloat())
+    private fun quickColors(): IntArray = if (Theme.dark) nightQuick else dayQuick
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Theme.load(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         projectId = intent.getStringExtra("pid") ?: "first"
         store = BoardStore(ProjectStore.boardFile(this, projectId))
 
+        penColors = IntArray(5) { i -> prefs.getInt("c$i", (if (Theme.dark) nightPens else dayPens)[i]) }
+
         draw = DrawView(this)
+        draw.setPaper(Theme.PAPER, Theme.GRID)
         for (p in Pen.values()) {
             draw.selectPen(p)
             draw.setColor(penColors[p.ordinal])
         }
         draw.selectPen(Pen.INK)
-
         draw.onChanged = { saveNow() }
         store.read()?.let { draw.restore(it) }
 
         eraserIcon = PenIconView(this, PenIconView.ERASER)
+        eraserWrap = wrap(eraserIcon)
         dock = LinearLayout(this).apply { setPadding(dp(6), dp(8), dp(6), dp(8)) }
 
         vScroll = ScrollView(this).apply {
@@ -91,7 +97,7 @@ class MainActivity : Activity() {
         root.addView(
             vScroll,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.CENTER_VERTICAL)
-                .apply { setMargins(dp(8), dp(64), dp(8), dp(12)) }
+                .apply { setMargins(dp(8), dp(70), dp(8), dp(12)) }
         )
         root.addView(
             hScroll,
@@ -99,24 +105,51 @@ class MainActivity : Activity() {
                 .apply { setMargins(dp(8), dp(8), dp(8), dp(12)) }
         )
 
-        // زرار الرجوع للمشاريع
+        // الشريط العلوي: رجوع | تراجع وإعادة | الثيم
+        undoIcon = GlyphView(this, GlyphView.UNDO).apply { setOnClickListener { draw.undo() } }
+        redoIcon = GlyphView(this, GlyphView.REDO).apply { setOnClickListener { draw.redo() } }
+        draw.onHistoryChanged = { updateHistoryIcons() }
+        val back = GlyphView(this, GlyphView.BACK).apply { setOnClickListener { finish() } }
+        val themeBtn = GlyphView(this, if (Theme.dark) GlyphView.SUN else GlyphView.MOON).apply {
+            setOnClickListener {
+                Theme.toggle(this@MainActivity)
+                recreate()
+            }
+        }
+        val pill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+            background = Theme.box(this@MainActivity, Theme.PANEL, 22f, Theme.BORDER, 1f)
+            addView(back, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(sepView(), sepLp())
+            addView(undoIcon, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(redoIcon, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(sepView(), sepLp())
+            addView(themeBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
+        }
         root.addView(
-            circleButton("→") { finish() },
-            FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END)
-                .apply { setMargins(dp(8), dp(8), dp(8), 0) }
+            pill,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+                .apply { setMargins(0, dp(8), 0, 0) }
         )
 
         // زرار تبديل الشريط أفقي / رأسي
-        root.addView(
-            circleButton("⇄") {
+        val orient = GlyphView(this, GlyphView.ORIENT).apply {
+            background = Theme.box(this@MainActivity, Theme.PANEL, 0f, Theme.BORDER, 1f, oval = true)
+            setOnClickListener {
                 vertical = !vertical
                 applyOrientation()
-            },
+            }
+        }
+        root.addView(
+            orient,
             FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.START)
                 .apply { setMargins(dp(8), dp(8), dp(8), 0) }
         )
 
         setContentView(root)
+        updateHistoryIcons()
         applyOrientation()
     }
 
@@ -131,14 +164,20 @@ class MainActivity : Activity() {
         io.execute { store.write(json) }
     }
 
-    private fun circleButton(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
-        text = label
-        textSize = 18f
-        setTextColor(Theme.TEXT)
-        gravity = Gravity.CENTER
-        background = Theme.box(this@MainActivity, Theme.PANEL, 0f, Theme.BORDER, 1f, oval = true)
-        setOnClickListener { onClick() }
+    private fun updateHistoryIcons() {
+        undoIcon.alpha = if (draw.canUndo) 1f else 0.3f
+        redoIcon.alpha = if (draw.canRedo) 1f else 0.3f
     }
+
+    private fun sepView(): View = View(this).apply { setBackgroundColor(Theme.BORDER) }
+    private fun sepLp(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(dp(1), dp(22)).apply { setMargins(dp(4), 0, dp(4), 0) }
+
+    private fun wrap(child: View): FrameLayout = FrameLayout(this).apply {
+        addView(child, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun selectedBg() = Theme.box(this, 0x2638BDF8, 12f)
 
     private fun applyOrientation() {
         (dock.parent as? ViewGroup)?.removeView(dock)
@@ -150,7 +189,6 @@ class MainActivity : Activity() {
         } else {
             dock.orientation = LinearLayout.HORIZONTAL
             hScroll.addView(dock)
-            hScroll.visibility = View.GONE
             hScroll.visibility = View.VISIBLE
             vScroll.visibility = View.GONE
         }
@@ -163,10 +201,7 @@ class MainActivity : Activity() {
     private fun sizeLp(w: Int, h: Int, m: Int): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(dp(w), dp(h)).apply { setMargins(dp(m), dp(m), dp(m), dp(m)) }
 
-    // خط فاصل بين المجموعات، بيتعدل حسب الاتجاه
-    private fun divider(): View = View(this).apply {
-        setBackgroundColor(Theme.BORDER)
-    }.also { }
+    private fun divider(): View = View(this).apply { setBackgroundColor(Theme.BORDER) }
 
     private fun dividerLp(): LinearLayout.LayoutParams =
         if (vertical) LinearLayout.LayoutParams(dp(26), dp(1)).apply { setMargins(0, dp(6), 0, dp(6)) }
@@ -175,6 +210,7 @@ class MainActivity : Activity() {
     private fun rebuildDock() {
         dock.removeAllViews()
         penIcons.clear()
+        penWraps.clear()
         swatches.clear()
 
         // 1) الأقلام فوق
@@ -182,7 +218,9 @@ class MainActivity : Activity() {
             val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
             ic.setOnClickListener { onPenTap(p) }
             penIcons[p] = ic
-            dock.addView(ic, penLp())
+            val w = wrap(ic)
+            penWraps[p] = w
+            dock.addView(w, penLp())
         }
         dock.addView(
             TextView(this).apply {
@@ -198,7 +236,7 @@ class MainActivity : Activity() {
         dock.addView(divider(), dividerLp())
 
         // 2) الألوان في النص
-        for (c in quickColors) {
+        for (c in quickColors()) {
             val dot = View(this)
             dot.setOnClickListener { applyColor(c) }
             swatches.add(Pair(c, dot))
@@ -211,7 +249,7 @@ class MainActivity : Activity() {
             draw.eraserMode = true
             refresh()
         }
-        dock.addView(eraserIcon, penLp())
+        dock.addView(eraserWrap, penLp())
         dock.addView(
             TextView(this).apply {
                 text = "مسح"
@@ -228,14 +266,14 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
-        for ((p, ic) in penIcons) ic.active = !draw.eraserMode && draw.pen == p
-        eraserIcon.active = draw.eraserMode
+        for ((p, w) in penWraps) w.background = if (!draw.eraserMode && draw.pen == p) selectedBg() else null
+        eraserWrap.background = if (draw.eraserMode) selectedBg() else null
         val current = penColors[draw.pen.ordinal]
         for ((c, v) in swatches) {
             v.background = if (!draw.eraserMode && c == current) {
                 Theme.box(this, c, 0f, Theme.ACCENT, 2.5f, oval = true)
             } else {
-                Theme.box(this, c, 0f, 0x66FFFFFF, 1f, oval = true)
+                Theme.box(this, c, 0f, Theme.BORDER, 1f, oval = true)
             }
         }
     }
@@ -255,6 +293,7 @@ class MainActivity : Activity() {
     private fun applyColor(c: Int) {
         val p = draw.pen
         penColors[p.ordinal] = c
+        prefs.edit().putInt("c${p.ordinal}", c).apply()
         draw.setColor(c)
         penIcons[p]?.color = c
         draw.eraserMode = false
@@ -274,7 +313,7 @@ class MainActivity : Activity() {
             for (col in 0 until 6) {
                 val c = paletteColors[row * 6 + col]
                 val sw = View(this).apply {
-                    background = Theme.box(this@MainActivity, c, 0f, 0x66FFFFFF, 1f, oval = true)
+                    background = Theme.box(this@MainActivity, c, 0f, Theme.BORDER, 1f, oval = true)
                     setOnClickListener {
                         applyColor(c)
                         popup?.dismiss()
