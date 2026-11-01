@@ -3,9 +3,7 @@ package com.ms.whiteboard
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -20,27 +18,46 @@ import java.util.Locale
 
 class HomeActivity : Activity() {
 
-    private val d: Float by lazy { resources.displayMetrics.density }
-    private fun dp(v: Int): Int = (v * d).toInt()
-
+    private fun dp(v: Int): Int = Theme.dp(this, v.toFloat())
     private lateinit var list: LinearLayout
     private val fmt = SimpleDateFormat("d MMM yyyy - HH:mm", Locale("ar"))
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Theme.load(this)
         ProjectStore.migrateIfNeeded(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF0B1120.toInt())
+            setBackgroundColor(Theme.BG)
             setPadding(dp(16), dp(24), dp(16), dp(16))
         }
 
-        root.addView(TextView(this).apply {
-            text = "مشاريعي"
-            textSize = 26f
-            setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, dp(16))
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(
+            TextView(this).apply {
+                text = "مشاريعي"
+                textSize = 26f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(Theme.TEXT)
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        header.addView(
+            GlyphView(this, if (Theme.dark) GlyphView.SUN else GlyphView.MOON).apply {
+                background = Theme.box(this@HomeActivity, Theme.PANEL, 0f, Theme.BORDER, 1f, oval = true)
+                setOnClickListener {
+                    Theme.toggle(this@HomeActivity)
+                    recreate()
+                }
+            },
+            LinearLayout.LayoutParams(dp(44), dp(44))
+        )
+        root.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, 0, 0, dp(16))
         })
 
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
@@ -55,7 +72,7 @@ class HomeActivity : Activity() {
                 setTextColor(0xFF0B1120.toInt())
                 gravity = Gravity.CENTER
                 setTypeface(typeface, Typeface.BOLD)
-                background = roundBg(0xFF38BDF8.toInt(), 14)
+                background = Theme.box(this@HomeActivity, Theme.ACCENT, 14f)
                 setOnClickListener { askNewName() }
             },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply { setMargins(0, dp(12), 0, 0) }
@@ -69,11 +86,6 @@ class HomeActivity : Activity() {
         refresh()
     }
 
-    private fun roundBg(color: Int, radiusDp: Int): GradientDrawable = GradientDrawable().apply {
-        cornerRadius = dp(radiusDp).toFloat()
-        setColor(color)
-    }
-
     private fun refresh() {
         list.removeAllViews()
         val projects = ProjectStore.list(this)
@@ -81,7 +93,7 @@ class HomeActivity : Activity() {
             list.addView(TextView(this).apply {
                 text = "مفيش مشاريع لسه.\nاضغط \"مشروع جديد\" عشان تبدأ."
                 textSize = 15f
-                setTextColor(0x99FFFFFF.toInt())
+                setTextColor(Theme.MUTED)
                 gravity = Gravity.CENTER
                 setPadding(0, dp(60), 0, 0)
             })
@@ -99,16 +111,16 @@ class HomeActivity : Activity() {
     private fun card(p: Project): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(14), dp(16), dp(14))
-        background = roundBg(0xFF111A2E.toInt(), 16).apply { setStroke(dp(1), 0x33FFFFFF) }
+        background = Theme.box(this@HomeActivity, Theme.PANEL, 16f, Theme.BORDER, 1f)
         addView(TextView(context).apply {
             text = p.name
             textSize = 17f
-            setTextColor(Color.WHITE)
+            setTextColor(Theme.TEXT)
         })
         addView(TextView(context).apply {
             text = "آخر تعديل: " + fmt.format(Date(p.updated))
             textSize = 12f
-            setTextColor(0x99FFFFFF.toInt())
+            setTextColor(Theme.MUTED)
             setPadding(0, dp(4), 0, 0)
         })
         setOnClickListener { openProject(p.id) }
