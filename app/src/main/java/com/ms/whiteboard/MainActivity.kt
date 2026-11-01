@@ -3,7 +3,6 @@ package com.ms.whiteboard
 import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -15,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
+import java.io.File
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -31,6 +31,7 @@ class MainActivity : Activity() {
     private var popup: PopupWindow? = null
 
     private val penIcons = HashMap<Pen, PenIconView>()
+    private val swatches = ArrayList<Pair<Int, View>>()
     private var lastPen: Pen? = null
     private var lastTap = 0L
 
@@ -54,8 +55,7 @@ class MainActivity : Activity() {
         0xFF4F46E5.toInt(), 0xFF7C3AED.toInt(), 0xFFA855F7.toInt(), 0xFFEC4899.toInt(), 0xFFBE185D.toInt(), 0xFF78350F.toInt()
     )
 
-    private val d: Float by lazy { resources.displayMetrics.density }
-    private fun dp(v: Int): Int = (v * d).toInt()
+    private fun dp(v: Int): Int = Theme.dp(this, v.toFloat())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,11 +79,11 @@ class MainActivity : Activity() {
 
         vScroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
-            background = panelBg()
+            background = Theme.box(this@MainActivity, Theme.PANEL, 24f, Theme.BORDER, 1f)
         }
         hScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
-            background = panelBg()
+            background = Theme.box(this@MainActivity, Theme.PANEL, 24f, Theme.BORDER, 1f)
         }
 
         val root = FrameLayout(this)
@@ -100,40 +100,23 @@ class MainActivity : Activity() {
         )
 
         // زرار الرجوع للمشاريع
-        val back = TextView(this).apply {
-            text = "→"
-            textSize = 18f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            background = panelBg(oval = true)
-            setOnClickListener { finish() }
-        }
         root.addView(
-            back,
+            circleButton("→") { finish() },
             FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END)
                 .apply { setMargins(dp(8), dp(8), dp(8), 0) }
         )
 
         // زرار تبديل الشريط أفقي / رأسي
-        val toggle = TextView(this).apply {
-            text = "⇄"
-            textSize = 18f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            background = panelBg(oval = true)
-            setOnClickListener {
+        root.addView(
+            circleButton("⇄") {
                 vertical = !vertical
                 applyOrientation()
-            }
-        }
-        root.addView(
-            toggle,
+            },
             FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.START)
                 .apply { setMargins(dp(8), dp(8), dp(8), 0) }
         )
 
         setContentView(root)
-        rebuildDock()
         applyOrientation()
     }
 
@@ -148,15 +131,13 @@ class MainActivity : Activity() {
         io.execute { store.write(json) }
     }
 
-    private fun panelBg(oval: Boolean = false): GradientDrawable = GradientDrawable().apply {
-        if (oval) shape = GradientDrawable.OVAL else cornerRadius = dp(26).toFloat()
-        setColor(0xE6111A2E.toInt())
-        setStroke(dp(1), 0x33FFFFFF)
-    }
-
-    private fun roundBg(color: Int): GradientDrawable = GradientDrawable().apply {
-        cornerRadius = dp(12).toFloat()
-        setColor(color)
+    private fun circleButton(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
+        text = label
+        textSize = 18f
+        setTextColor(Theme.TEXT)
+        gravity = Gravity.CENTER
+        background = Theme.box(this@MainActivity, Theme.PANEL, 0f, Theme.BORDER, 1f, oval = true)
+        setOnClickListener { onClick() }
     }
 
     private fun applyOrientation() {
@@ -169,65 +150,78 @@ class MainActivity : Activity() {
         } else {
             dock.orientation = LinearLayout.HORIZONTAL
             hScroll.addView(dock)
+            hScroll.visibility = View.GONE
             hScroll.visibility = View.VISIBLE
             vScroll.visibility = View.GONE
         }
+        rebuildDock()
     }
 
-    private fun iconLp(): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(dp(40), dp(58)).apply { setMargins(0, dp(2), 0, dp(2)) }
+    private fun penLp(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(dp(40), dp(56)).apply { setMargins(dp(3), dp(2), dp(3), dp(2)) }
+
+    private fun sizeLp(w: Int, h: Int, m: Int): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(dp(w), dp(h)).apply { setMargins(dp(m), dp(m), dp(m), dp(m)) }
+
+    // خط فاصل بين المجموعات، بيتعدل حسب الاتجاه
+    private fun divider(): View = View(this).apply {
+        setBackgroundColor(Theme.BORDER)
+    }.also { }
+
+    private fun dividerLp(): LinearLayout.LayoutParams =
+        if (vertical) LinearLayout.LayoutParams(dp(26), dp(1)).apply { setMargins(0, dp(6), 0, dp(6)) }
+        else LinearLayout.LayoutParams(dp(1), dp(26)).apply { setMargins(dp(6), 0, dp(6), 0) }
 
     private fun rebuildDock() {
         dock.removeAllViews()
         penIcons.clear()
+        swatches.clear()
 
+        // 1) الأقلام فوق
         for (p in visible) {
             val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
             ic.setOnClickListener { onPenTap(p) }
             penIcons[p] = ic
-            dock.addView(ic, iconLp())
+            dock.addView(ic, penLp())
         }
-
         dock.addView(
             TextView(this).apply {
                 text = "+"
-                textSize = 22f
-                setTextColor(Color.WHITE)
+                textSize = 20f
+                setTextColor(Theme.MUTED)
                 gravity = Gravity.CENTER
-                background = roundBg(0x33FFFFFF)
+                background = Theme.box(this@MainActivity, 0x1AFFFFFF, 0f, oval = true)
                 setOnClickListener { showMore() }
             },
-            LinearLayout.LayoutParams(dp(40), dp(32)).apply { setMargins(0, dp(4), 0, dp(4)) }
+            sizeLp(30, 30, 3)
         )
+        dock.addView(divider(), dividerLp())
 
+        // 2) الألوان في النص
+        for (c in quickColors) {
+            val dot = View(this)
+            dot.setOnClickListener { applyColor(c) }
+            swatches.add(Pair(c, dot))
+            dock.addView(dot, sizeLp(24, 24, 5))
+        }
+        dock.addView(divider(), dividerLp())
+
+        // 3) الممحاة ومسح تحت
         eraserIcon.setOnClickListener {
             draw.eraserMode = true
             refresh()
         }
-        dock.addView(eraserIcon, iconLp())
-
-        for (c in quickColors) {
-            val dot = View(this).apply {
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(c)
-                    setStroke(dp(1), 0x99FFFFFF.toInt())
-                }
-                setOnClickListener { applyColor(c) }
-            }
-            dock.addView(dot, LinearLayout.LayoutParams(dp(28), dp(28)).apply { setMargins(0, dp(4), 0, dp(4)) })
-        }
-
+        dock.addView(eraserIcon, penLp())
         dock.addView(
             TextView(this).apply {
                 text = "مسح"
                 textSize = 12f
-                setTextColor(Color.WHITE)
+                setTextColor(Theme.DANGER)
                 gravity = Gravity.CENTER
-                background = roundBg(0x66E53935)
+                background = Theme.box(this@MainActivity, 0x33EF4444, 13f)
                 setOnClickListener { confirmClear() }
             },
-            LinearLayout.LayoutParams(dp(40), dp(32)).apply { setMargins(0, dp(8), 0, 0) }
+            LinearLayout.LayoutParams(dp(44), dp(26)).apply { setMargins(dp(3), dp(8), dp(3), dp(2)) }
         )
 
         refresh()
@@ -236,6 +230,14 @@ class MainActivity : Activity() {
     private fun refresh() {
         for ((p, ic) in penIcons) ic.active = !draw.eraserMode && draw.pen == p
         eraserIcon.active = draw.eraserMode
+        val current = penColors[draw.pen.ordinal]
+        for ((c, v) in swatches) {
+            v.background = if (!draw.eraserMode && c == current) {
+                Theme.box(this, c, 0f, Theme.ACCENT, 2.5f, oval = true)
+            } else {
+                Theme.box(this, c, 0f, 0x66FFFFFF, 1f, oval = true)
+            }
+        }
     }
 
     // ضغطة = اختيار القلم، ضغطتين بسرعة = منتقي ألوان القلم
@@ -272,11 +274,7 @@ class MainActivity : Activity() {
             for (col in 0 until 6) {
                 val c = paletteColors[row * 6 + col]
                 val sw = View(this).apply {
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(c)
-                        setStroke(dp(1), 0x66FFFFFF)
-                    }
+                    background = Theme.box(this@MainActivity, c, 0f, 0x66FFFFFF, 1f, oval = true)
                     setOnClickListener {
                         applyColor(c)
                         popup?.dismiss()
@@ -298,7 +296,7 @@ class MainActivity : Activity() {
         for (p in hidden) {
             val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
             ic.setOnClickListener { pickFromMore(p) }
-            list.addView(ic, LinearLayout.LayoutParams(dp(40), dp(58)).apply { setMargins(0, dp(2), 0, dp(2)) })
+            list.addView(ic, penLp())
         }
         showPopup(list)
     }
@@ -319,7 +317,7 @@ class MainActivity : Activity() {
         popup?.dismiss()
         val pop = PopupWindow(content, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true)
         pop.setOutsideTouchable(true)
-        pop.setBackgroundDrawable(panelBg())
+        pop.setBackgroundDrawable(Theme.box(this, Theme.PANEL, 16f, Theme.BORDER, 1f))
         pop.showAtLocation(window.decorView, Gravity.CENTER, 0, 0)
         popup = pop
     }
