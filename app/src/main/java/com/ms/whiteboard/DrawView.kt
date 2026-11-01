@@ -26,6 +26,13 @@ class DrawView(context: Context) : View(context) {
     var onHistoryChanged: (() -> Unit)? = null
     var onZoomChanged: ((Float) -> Unit)? = null
 
+    // صورة خلفية (صفحة PDF مثلاً) بتتعرض مضبوطة في النص، والرسم فوقها
+    var underlay: Bitmap? = null
+        set(v) {
+            field = v
+            invalidate()
+        }
+
     private class Action(val added: List<Stroke>, val removed: List<Stroke>)
     private val undoStack = ArrayList<Action>()
     private val redoStack = ArrayList<Action>()
@@ -237,6 +244,7 @@ class DrawView(context: Context) : View(context) {
         coordH = d.h
         if (width > 0 && height > 0) layoutTo(width, height)
         invalidate()
+        onHistoryChanged?.invoke()
     }
 
     private fun layoutTo(w: Int, h: Int) {
@@ -270,18 +278,30 @@ class DrawView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(tx, ty)
         canvas.scale(zoom, zoom)
-        val clip = canvas.clipBounds
-        val step = 40f * density
-        var x = (clip.left / step).toInt() * step
-        while (x <= clip.right) {
-            canvas.drawLine(x, clip.top.toFloat(), x, clip.bottom.toFloat(), gridPaint)
-            x += step
+
+        val u = underlay
+        if (u != null) {
+            val s = min(width.toFloat() / u.width, height.toFloat() / u.height)
+            val dw = u.width * s
+            val dh = u.height * s
+            val l = (width - dw) / 2f
+            val t = (height - dh) / 2f
+            canvas.drawBitmap(u, null, RectF(l, t, l + dw, t + dh), bitmapPaint)
+        } else {
+            val clip = canvas.clipBounds
+            val step = 40f * density
+            var x = (clip.left / step).toInt() * step
+            while (x <= clip.right) {
+                canvas.drawLine(x, clip.top.toFloat(), x, clip.bottom.toFloat(), gridPaint)
+                x += step
+            }
+            var y = (clip.top / step).toInt() * step
+            while (y <= clip.bottom) {
+                canvas.drawLine(clip.left.toFloat(), y, clip.right.toFloat(), y, gridPaint)
+                y += step
+            }
         }
-        var y = (clip.top / step).toInt() * step
-        while (y <= clip.bottom) {
-            canvas.drawLine(clip.left.toFloat(), y, clip.right.toFloat(), y, gridPaint)
-            y += step
-        }
+
         bitmap?.let { canvas.drawBitmap(it, 0f, 0f, bitmapPaint) }
         if (hlActive) canvas.drawPath(hlPath, hlPaint)
         canvas.restore()
@@ -420,7 +440,7 @@ class DrawView(context: Context) : View(context) {
         onChanged?.invoke()
     }
 
-    // لما إصبعين يتقفلوا على الشاشة والصبع كان بيرسم: نلغي الخط ده ونبدأ تكبير
+    // لما إصبعين يتقفلوا والصبع كان بيكتب: نلغي الخط ده ونبدأ التكبير
     private fun cancelFingerStroke() {
         val s = inkStroke ?: return
         strokes.remove(s)
@@ -573,7 +593,6 @@ class DrawView(context: Context) : View(context) {
                         e.getTouchMajor(0) < palmSize && e.getTouchMajor(1) < palmSize
 
                 when {
-                    // القلم: يرسم، أو يمسح لو الممحاة مفعلة
                     isStylus -> {
                         if (eraserMode) {
                             if (eraseId == -1) {
@@ -587,19 +606,16 @@ class DrawView(context: Context) : View(context) {
                             startStroke(cX(x), cY(y), e.getPressure(i), e.eventTime)
                         }
                     }
-                    // مساحة كبيرة زي الإيد: تمسح
                     major >= palmSize -> {
                         if (eraseId == -1) {
                             eraseId = id
                             startErase(cX(x), cY(y), eraseSize(major))
                         }
                     }
-                    // إصبعين صغيرين: تكبير وتحريك (ويلغي أي خط إصبع بدأ)
                     bothSmall && !gesture && (stylusId == -1 || stylusIsFinger) -> {
                         if (stylusIsFinger) cancelFingerStroke()
                         beginGesture(e)
                     }
-                    // إصبع صغير واحد: يكتب عادي
                     !gesture && stylusId == -1 && e.pointerCount == 1 -> {
                         realPressure = false
                         stylusIsFinger = true
