@@ -20,7 +20,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Prepare signing key
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/ms.jks"
+
       - name: Build debug APK
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/ms.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: gradle assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
