@@ -3,6 +3,7 @@ package com.ms.whiteboard
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -14,7 +15,6 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
-import java.io.File
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -28,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var redoIcon: GlyphView
     private lateinit var eraserIcon: PenIconView
     private lateinit var eraserWrap: FrameLayout
+    private lateinit var zoomLabel: TextView
     private var projectId = "first"
     private val io = Executors.newSingleThreadExecutor()
     private var vertical = true
@@ -41,7 +42,6 @@ class MainActivity : Activity() {
     private var penColors = IntArray(5)
     private val prefs by lazy { getSharedPreferences("pens", Context.MODE_PRIVATE) }
 
-    // الأربعة الظاهرين، والباقي في زرار +
     private val visible = mutableListOf(Pen.INK, Pen.PENCIL, Pen.MARKER, Pen.HIGHLIGHTER)
     private val hidden = mutableListOf(Pen.BRUSH)
 
@@ -77,6 +77,7 @@ class MainActivity : Activity() {
         }
         draw.selectPen(Pen.INK)
         draw.onChanged = { saveNow() }
+        draw.onZoomChanged = { z -> zoomLabel.text = "${(z * 100).toInt()}%" }
         store.read()?.let { draw.restore(it) }
 
         eraserIcon = PenIconView(this, PenIconView.ERASER)
@@ -97,55 +98,22 @@ class MainActivity : Activity() {
         root.addView(
             vScroll,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.CENTER_VERTICAL)
-                .apply { setMargins(dp(8), dp(70), dp(8), dp(12)) }
+                .apply { setMargins(dp(8), dp(84), dp(12), dp(12)) }
         )
         root.addView(
             hScroll,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
                 .apply { setMargins(dp(8), dp(8), dp(8), dp(12)) }
         )
-
-        // الشريط العلوي: رجوع | تراجع وإعادة | الثيم
-        undoIcon = GlyphView(this, GlyphView.UNDO).apply { setOnClickListener { draw.undo() } }
-        redoIcon = GlyphView(this, GlyphView.REDO).apply { setOnClickListener { draw.redo() } }
-        draw.onHistoryChanged = { updateHistoryIcons() }
-        val back = GlyphView(this, GlyphView.BACK).apply { setOnClickListener { finish() } }
-        val themeBtn = GlyphView(this, if (Theme.dark) GlyphView.SUN else GlyphView.MOON).apply {
-            setOnClickListener {
-                Theme.toggle(this@MainActivity)
-                recreate()
-            }
-        }
-        val pill = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-            background = Theme.box(this@MainActivity, Theme.PANEL, 22f, Theme.BORDER, 1f)
-            addView(back, LinearLayout.LayoutParams(dp(40), dp(40)))
-            addView(sepView(), sepLp())
-            addView(undoIcon, LinearLayout.LayoutParams(dp(40), dp(40)))
-            addView(redoIcon, LinearLayout.LayoutParams(dp(40), dp(40)))
-            addView(sepView(), sepLp())
-            addView(themeBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
-        }
         root.addView(
-            pill,
+            topBar(),
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
-                .apply { setMargins(0, dp(8), 0, 0) }
+                .apply { setMargins(dp(8), dp(10), dp(8), 0) }
         )
-
-        // زرار تبديل الشريط أفقي / رأسي
-        val orient = GlyphView(this, GlyphView.ORIENT).apply {
-            background = Theme.box(this@MainActivity, Theme.PANEL, 0f, Theme.BORDER, 1f, oval = true)
-            setOnClickListener {
-                vertical = !vertical
-                applyOrientation()
-            }
-        }
         root.addView(
-            orient,
-            FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.START)
-                .apply { setMargins(dp(8), dp(8), dp(8), 0) }
+            zoomBar(),
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START)
+                .apply { setMargins(dp(12), 0, dp(12), dp(12)) }
         )
 
         setContentView(root)
@@ -169,6 +137,85 @@ class MainActivity : Activity() {
         redoIcon.alpha = if (draw.canRedo) 1f else 0.3f
     }
 
+    // ---- الشريط العلوي الزجاجي ----
+    private fun topBar(): LinearLayout {
+        val name = ProjectStore.list(this).firstOrNull { it.id == projectId }?.name ?: "مشروع"
+        undoIcon = GlyphView(this, GlyphView.UNDO).apply { setOnClickListener { draw.undo() } }
+        redoIcon = GlyphView(this, GlyphView.REDO).apply { setOnClickListener { draw.redo() } }
+        draw.onHistoryChanged = { updateHistoryIcons() }
+
+        val back = GlyphView(this, GlyphView.BACK).apply { setOnClickListener { finish() } }
+        val orient = GlyphView(this, GlyphView.ORIENT).apply {
+            setOnClickListener {
+                vertical = !vertical
+                applyOrientation()
+            }
+        }
+        val themeBtn = GlyphView(this, if (Theme.dark) GlyphView.SUN else GlyphView.MOON).apply {
+            setOnClickListener {
+                Theme.toggle(this@MainActivity)
+                recreate()
+            }
+        }
+        val title = TextView(this).apply {
+            text = name
+            textSize = 14f
+            setTextColor(Theme.TEXT)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(10), 0, dp(10), 0)
+            maxWidth = dp(150)
+        }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(5), dp(6), dp(5))
+            background = Theme.box(this@MainActivity, Theme.PANEL, 24f, Theme.BORDER, 1f)
+            addView(back, btnLp())
+            addView(title)
+            addView(sepView(), sepLp())
+            addView(undoIcon, btnLp())
+            addView(redoIcon, btnLp())
+            addView(sepView(), sepLp())
+            addView(orient, btnLp())
+            addView(themeBtn, btnLp())
+        }
+    }
+
+    // ---- شريط التكبير والتصغير ----
+    private fun zoomBar(): LinearLayout {
+        zoomLabel = TextView(this).apply {
+            text = "100%"
+            textSize = 12f
+            setTextColor(Theme.TEXT)
+            gravity = Gravity.CENTER
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            setOnClickListener { draw.resetZoom() }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(4), dp(6), dp(4), dp(6))
+            background = Theme.box(this@MainActivity, Theme.PANEL, 22f, Theme.BORDER, 1f)
+            addView(zoomBtn("+") { draw.zoomIn() }, btnLp())
+            addView(zoomLabel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(zoomBtn("−") { draw.zoomOut() }, btnLp())
+        }
+    }
+
+    private fun zoomBtn(label: String, action: () -> Unit): TextView = TextView(this).apply {
+        text = label
+        textSize = 20f
+        setTextColor(Theme.TEXT)
+        gravity = Gravity.CENTER
+        setOnClickListener { action() }
+    }
+
+    private fun btnLp(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+
     private fun sepView(): View = View(this).apply { setBackgroundColor(Theme.BORDER) }
     private fun sepLp(): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(dp(1), dp(22)).apply { setMargins(dp(4), 0, dp(4), 0) }
@@ -177,7 +224,11 @@ class MainActivity : Activity() {
         addView(child, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
-    private fun selectedBg() = Theme.box(this, 0x2638BDF8, 12f)
+    // القلم المختار: تدرج أزرق مع ذهبي
+    private fun selectedBg(): GradientDrawable = GradientDrawable(
+        GradientDrawable.Orientation.LEFT_RIGHT,
+        intArrayOf(0x4038BDF8, 0x40FACC15)
+    ).apply { cornerRadius = dp(12).toFloat() }
 
     private fun applyOrientation() {
         (dock.parent as? ViewGroup)?.removeView(dock)
@@ -213,7 +264,6 @@ class MainActivity : Activity() {
         penWraps.clear()
         swatches.clear()
 
-        // 1) الأقلام فوق
         for (p in visible) {
             val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
             ic.setOnClickListener { onPenTap(p) }
@@ -235,7 +285,6 @@ class MainActivity : Activity() {
         )
         dock.addView(divider(), dividerLp())
 
-        // 2) الألوان في النص
         for (c in quickColors()) {
             val dot = View(this)
             dot.setOnClickListener { applyColor(c) }
@@ -244,7 +293,6 @@ class MainActivity : Activity() {
         }
         dock.addView(divider(), dividerLp())
 
-        // 3) الممحاة ومسح تحت
         eraserIcon.setOnClickListener {
             draw.eraserMode = true
             refresh()
@@ -340,7 +388,6 @@ class MainActivity : Activity() {
         showPopup(list)
     }
 
-    // القلم اللي اتختار من + بيحل محل الرابع الظاهر، والقديم بيروح للقائمة
     private fun pickFromMore(p: Pen) {
         val old = visible[visible.size - 1]
         visible[visible.size - 1] = p
