@@ -11,8 +11,20 @@ android {
         applicationId = "com.ms.whiteboard"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
         versionName = "1.0"
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            val ksPath = System.getenv("KEYSTORE_PATH")
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = "msboard"
+                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     compileOptions {
