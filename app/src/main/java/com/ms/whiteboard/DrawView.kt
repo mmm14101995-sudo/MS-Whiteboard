@@ -24,6 +24,7 @@ class DrawView(context: Context) : View(context) {
 
     var onChanged: (() -> Unit)? = null
     var onHistoryChanged: (() -> Unit)? = null
+    var onZoomChanged: ((Float) -> Unit)? = null
 
     private class Action(val added: List<Stroke>, val removed: List<Stroke>)
     private val undoStack = ArrayList<Action>()
@@ -42,8 +43,31 @@ class DrawView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private val palmSize = 100f * density
     var penWidth = 7f * density
-    var fingerDraws = true
     var eraserMode = false
+
+    // الكتابة بالقلم بس. لو true الإصبع الصغير هيرسم كمان (للتجربة)
+    var fingerDraws = false
+
+    // ---- التكبير والتحريك ----
+    var zoom = 1f
+        private set
+    private var tx = 0f
+    private var ty = 0f
+    private val minZoom = 1f
+    private val maxZoom = 5f
+
+    private var gesture = false
+    private var gIdA = -1
+    private var gIdB = -1
+    private var gDist = 1f
+    private var gScale = 1f
+    private var gTx = 0f
+    private var gTy = 0f
+    private var gMx = 0f
+    private var gMy = 0f
+    private var panId = -1
+    private var lastX = 0f
+    private var lastY = 0f
 
     var pen = Pen.INK
         private set
@@ -117,6 +141,48 @@ class DrawView(context: Context) : View(context) {
         gridPaint.color = grid
         invalidate()
     }
+
+    // ---- التكبير ----
+    fun zoomIn() = zoomBy(1.25f)
+    fun zoomOut() = zoomBy(0.8f)
+
+    fun zoomBy(factor: Float) {
+        setZoom(zoom * factor, width / 2f, height / 2f)
+    }
+
+    fun resetZoom() {
+        zoom = 1f
+        tx = 0f
+        ty = 0f
+        invalidate()
+        onZoomChanged?.invoke(zoom)
+    }
+
+    private fun setZoom(z: Float, cx: Float, cy: Float) {
+        val nz = z.coerceIn(minZoom, maxZoom)
+        val ox = (cx - tx) / zoom
+        val oy = (cy - ty) / zoom
+        zoom = nz
+        tx = cx - ox * nz
+        ty = cy - oy * nz
+        clampPan()
+        invalidate()
+        onZoomChanged?.invoke(zoom)
+    }
+
+    // ما نسيبش الصفحة تطلع بره الحدود
+    private fun clampPan() {
+        if (zoom <= 1f) {
+            tx = 0f
+            ty = 0f
+            return
+        }
+        tx = tx.coerceIn(width * (1f - zoom), 0f)
+        ty = ty.coerceIn(height * (1f - zoom), 0f)
+    }
+
+    private fun cX(x: Float) = (x - tx) / zoom
+    private fun cY(y: Float) = (y - ty) / zoom
 
     fun clearAll() {
         if (strokes.isEmpty()) return
@@ -206,19 +272,24 @@ class DrawView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(paperColor)
+        canvas.save()
+        canvas.translate(tx, ty)
+        canvas.scale(zoom, zoom)
+        val clip = canvas.clipBounds
         val step = 40f * density
-        var x = step
-        while (x < width) {
-            canvas.drawLine(x, 0f, x, height.toFloat(), gridPaint)
+        var x = (clip.left / step).toInt() * step
+        while (x <= clip.right) {
+            canvas.drawLine(x, clip.top.toFloat(), x, clip.bottom.toFloat(), gridPaint)
             x += step
         }
-        var y = step
-        while (y < height) {
-            canvas.drawLine(0f, y, width.toFloat(), y, gridPaint)
+        var y = (clip.top / step).toInt() * step
+        while (y <= clip.bottom) {
+            canvas.drawLine(clip.left.toFloat(), y, clip.right.toFloat(), y, gridPaint)
             y += step
         }
         bitmap?.let { canvas.drawBitmap(it, 0f, 0f, bitmapPaint) }
         if (hlActive) canvas.drawPath(hlPath, hlPaint)
+        canvas.restore()
     }
 
     private fun pencilShader(c: Int): BitmapShader = pencilShaders.getOrPut(c) {
@@ -260,8 +331,10 @@ class DrawView(context: Context) : View(context) {
         }
     }
 
-    private fun eraseSize(major: Float): Float =
-        if (eraserMode) max(penWidth * 4f, major) else major
+    private fun eraseSize(major: Float): Float {
+        val base = if (eraserMode) max(penWidth * 4f, major) else major
+        return base / zoom
+    }
 
     private fun addDirty(x: Float, y: Float, pad: Float) {
         val l = x - pad; val t = y - pad; val r = x + pad; val b = y + pad
@@ -273,14 +346,14 @@ class DrawView(context: Context) : View(context) {
         }
     }
 
+    // نحوّل المنطقة المتغيرة من إحداثيات الصفحة لإحداثيات الشاشة
     private fun flushDirty() {
-        if (hasDirty) {
-            invalidate(
-                dirty.left.toInt() - 2, dirty.top.toInt() - 2,
-                dirty.right.toInt() + 2, dirty.bottom.toInt() + 2
-            )
-            hasDirty = false
-        }
+        if (!hasDirty) return
+        invalidate(
+            (dirty.left * zoom + tx).toInt() - 2, (dirty.top * zoom + ty).toInt() - 2,
+            (dirty.right * zoom + tx).toInt() + 2, (dirty.bottom * zoom + ty).toInt() + 2
+        )
+        hasDirty = false
     }
 
     // ---- رسم الخط مباشرة وقت الكتابة ----
@@ -313,7 +386,8 @@ class DrawView(context: Context) : View(context) {
         val midX = (x + sx) / 2f
         val midY = (y + sy) / 2f
         val dt = max(1L, t - lastT).toFloat()
-        val speedDp = hypot(x - sx, y - sy) / dt / density
+        // السرعة بالشاشة مش بالصفحة، عشان الخط ميتغيرش مع التكبير
+        val speedDp = hypot(x - sx, y - sy) * zoom / dt / density
         val speedF = (1.3f - speedDp * 0.5f).coerceIn(0.3f, 1.3f)
         val target = widthFor(pr, speedF, p0)
         val k = if (p0 == Pen.BRUSH) 0.3f else 0.5f
@@ -322,188 +396,4 @@ class DrawView(context: Context) : View(context) {
             hlPath.quadTo(sx, sy, midX, midY)
         } else {
             seg.reset()
-            seg.moveTo(mx, my)
-            seg.quadTo(sx, sy, midX, midY)
-            bmpCanvas?.drawPath(seg, paintFor(p0, s.color, w))
-        }
-        val pad = w + 2f
-        addDirty(mx, my, pad); addDirty(sx, sy, pad); addDirty(midX, midY, pad)
-        mx = midX; my = midY
-        sx = x; sy = y
-        sw = w
-        lastT = t
-        s.add(x, y, target)
-    }
-
-    private fun endStroke() {
-        val s = inkStroke ?: return
-        if (s.pen == Pen.HIGHLIGHTER) {
-            hlPath.lineTo(sx, sy)
-            bmpCanvas?.drawPath(hlPath, paintFor(s.pen, s.color, sw))
-            hlPath.reset()
-            hlActive = false
-        } else {
-            seg.reset()
-            seg.moveTo(mx, my)
-            seg.lineTo(sx, sy)
-            bmpCanvas?.drawPath(seg, paintFor(s.pen, s.color, sw))
-        }
-        addDirty(mx, my, sw + 2f); addDirty(sx, sy, sw + 2f)
-        inkStroke = null
-        onChanged?.invoke()
-    }
-
-    // ---- الممحاة ----
-    private fun startErase(x: Float, y: Float, size: Float) {
-        val s = Stroke(pen, 0, true)
-        strokes.add(s)
-        eraseStroke = s
-        record(listOf(s), emptyList())
-        ex = x; ey = y
-        eraseTo(x, y, size)
-    }
-
-    private fun eraseTo(x: Float, y: Float, size: Float) {
-        erasePaint.strokeWidth = size
-        bmpCanvas?.drawLine(ex, ey, x, y, erasePaint)
-        val pad = size / 2f + 2f
-        addDirty(ex, ey, pad); addDirty(x, y, pad)
-        ex = x; ey = y
-        eraseStroke?.add(x, y, size)
-    }
-
-    // ---- إعادة رسم خط محفوظ (نفس طريقة الرسم المباشر) ----
-    private fun drawStroke(c: Canvas, s: Stroke) {
-        val n = s.size / 3
-        if (n == 0) return
-        val d = s.data
-
-        if (s.erase) {
-            for (i in 0 until n) {
-                val k = i * 3
-                erasePaint.strokeWidth = d[k + 2]
-                if (i == 0) c.drawLine(d[0], d[1], d[0], d[1], erasePaint)
-                else c.drawLine(d[k - 3], d[k - 2], d[k], d[k + 1], erasePaint)
-            }
-            return
-        }
-
-        if (n == 1) {
-            c.drawPoint(d[0], d[1], paintFor(s.pen, s.color, d[2]))
-            return
-        }
-
-        if (s.pen == Pen.HIGHLIGHTER) {
-            val path = Path()
-            var px0 = d[0]; var py0 = d[1]
-            path.moveTo(d[0], d[1])
-            for (i in 1 until n) {
-                val k = i * 3
-                val midX = (d[k] + px0) / 2f
-                val midY = (d[k + 1] + py0) / 2f
-                path.quadTo(px0, py0, midX, midY)
-                px0 = d[k]; py0 = d[k + 1]
-            }
-            path.lineTo(px0, py0)
-            c.drawPath(path, paintFor(s.pen, s.color, d[2]))
-            return
-        }
-
-        val kf = if (s.pen == Pen.BRUSH) 0.3f else 0.5f
-        var sx0 = d[0]; var sy0 = d[1]
-        var mx0 = d[0]; var my0 = d[1]
-        var sw0 = d[2]
-        val paint = paintFor(s.pen, s.color, sw0)
-        for (i in 1 until n) {
-            val k = i * 3
-            val x = d[k]; val y = d[k + 1]; val target = d[k + 2]
-            val midX = (x + sx0) / 2f
-            val midY = (y + sy0) / 2f
-            val w = sw0 * (1f - kf) + target * kf
-            seg.reset()
-            seg.moveTo(mx0, my0)
-            seg.quadTo(sx0, sy0, midX, midY)
-            paint.strokeWidth = w
-            c.drawPath(seg, paint)
-            mx0 = midX; my0 = midY
-            sx0 = x; sy0 = y
-            sw0 = w
-        }
-        seg.reset()
-        seg.moveTo(mx0, my0)
-        seg.lineTo(sx0, sy0)
-        paint.strokeWidth = sw0
-        c.drawPath(seg, paint)
-    }
-
-    // ---- اللمس ----
-    override fun onTouchEvent(e: MotionEvent): Boolean {
-        when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                val i = e.actionIndex
-                val id = e.getPointerId(i)
-                if (e.actionMasked == MotionEvent.ACTION_DOWN) requestUnbufferedDispatch(e)
-                val isStylus = e.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS
-                val major = e.getTouchMajor(i)
-                val free = stylusId == -1 && eraseId == -1
-                if (isStylus || (fingerDraws && free && major < palmSize)) {
-                    if (eraserMode) {
-                        if (eraseId == -1) {
-                            eraseId = id
-                            startErase(e.getX(i), e.getY(i), eraseSize(major))
-                        }
-                    } else if (stylusId == -1) {
-                        realPressure = isStylus
-                        stylusId = id
-                        startStroke(e.getX(i), e.getY(i), e.getPressure(i), e.eventTime)
-                    }
-                } else if (free && major >= palmSize) {
-                    eraseId = id
-                    startErase(e.getX(i), e.getY(i), eraseSize(major))
-                }
-            }
-
-            MotionEvent.ACTION_MOVE -> {
-                for (i in 0 until e.pointerCount) {
-                    val id = e.getPointerId(i)
-                    if (id == stylusId) {
-                        for (h in 0 until e.historySize) {
-                            addPoint(
-                                e.getHistoricalX(i, h), e.getHistoricalY(i, h),
-                                e.getHistoricalPressure(i, h), e.getHistoricalEventTime(h)
-                            )
-                        }
-                        addPoint(e.getX(i), e.getY(i), e.getPressure(i), e.eventTime)
-                    } else if (id == eraseId) {
-                        for (h in 0 until e.historySize) {
-                            eraseTo(e.getHistoricalX(i, h), e.getHistoricalY(i, h), eraseSize(e.getHistoricalTouchMajor(i, h)))
-                        }
-                        eraseTo(e.getX(i), e.getY(i), eraseSize(e.getTouchMajor(i)))
-                    }
-                }
-            }
-
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
-                val id = e.getPointerId(e.actionIndex)
-                if (id == stylusId) {
-                    endStroke()
-                    stylusId = -1
-                } else if (id == eraseId) {
-                    eraseStroke = null
-                    eraseId = -1
-                    onChanged?.invoke()
-                }
-            }
-
-            MotionEvent.ACTION_CANCEL -> {
-                if (inkStroke != null) endStroke()
-                stylusId = -1
-                eraseId = -1
-                eraseStroke = null
-                onChanged?.invoke()
-            }
-        }
-        flushDirty()
-        return true
-    }
-}
+            seg.m
