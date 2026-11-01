@@ -16,6 +16,8 @@ class GlyphView(context: Context, private val kind: Int) : View(context) {
         const val SUN = 3
         const val MOON = 4
         const val ORIENT = 5
+        const val PROJECTS = 6
+        const val PDF = 7
     }
 
     var color: Int = Theme.TEXT
@@ -34,7 +36,6 @@ class GlyphView(context: Context, private val kind: Int) : View(context) {
     private val path = Path()
 
     override fun onDraw(canvas: Canvas) {
-        // الأيقونة بترسم في 56% من المساحة، والباقي مسافة حواليها
         val w = width * 0.56f
         val h = height * 0.56f
         canvas.translate(width * 0.22f, height * 0.22f)
@@ -46,6 +47,8 @@ class GlyphView(context: Context, private val kind: Int) : View(context) {
             SUN -> sun(canvas, w, h)
             MOON -> moon(canvas, w, h)
             ORIENT -> orient(canvas, w, h)
+            PROJECTS -> projects(canvas, w)
+            PDF -> pdfIcon(canvas, w, h)
         }
     }
 
@@ -86,5 +89,32 @@ class GlyphView(context: Context, private val kind: Int) : View(context) {
     private fun orient(c: Canvas, w: Float, h: Float) {
         c.drawRoundRect(w * 0.3f, h * 0.12f, w * 0.7f, h * 0.88f, w * 0.1f, w * 0.1f, stroke)
         c.drawLine(w * 0.3f, h * 0.5f, w * 0.7f, h * 0.5f, stroke)
+    }
+
+    // أربع مربعات: تبويب المشاريع
+    private fun projects(c: Canvas, w: Float) {
+        val g = w * 0.12f
+        val s = (w - g) / 2f
+        val r = w * 0.1f
+        for (row in 0..1) for (col in 0..1) {
+            val l = col * (s + g)
+            val t = row * (s + g)
+            c.drawRoundRect(l, t, l + s, t + s, r, r, stroke)
+        }
+    }
+
+    // ورقة بزاوية مطوية وسطور: تبويب الـ PDF
+    private fun pdfIcon(c: Canvas, w: Float, h: Float) {
+        path.reset()
+        path.moveTo(w * 0.15f, h * 0.02f)
+        path.lineTo(w * 0.62f, h * 0.02f)
+        path.lineTo(w * 0.85f, h * 0.25f)
+        path.lineTo(w * 0.85f, h * 0.98f)
+        path.lineTo(w * 0.15f, h * 0.98f)
+        path.close()
+        c.drawPath(path, stroke)
+        for (y in listOf(0.5f, 0.66f, 0.82f)) {
+            c.drawLine(w * 0.3f, h * y, w * 0.7f, h * y, stroke)
+        }
     }
 }
