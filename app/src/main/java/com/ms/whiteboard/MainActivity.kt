@@ -15,6 +15,8 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
+import java.io.File
+import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
 
@@ -23,6 +25,8 @@ class MainActivity : Activity() {
     private lateinit var vScroll: ScrollView
     private lateinit var hScroll: HorizontalScrollView
     private lateinit var eraserIcon: PenIconView
+    private lateinit var store: BoardStore
+    private val io = Executors.newSingleThreadExecutor()
     private var vertical = true
     private var popup: PopupWindow? = null
 
@@ -63,6 +67,11 @@ class MainActivity : Activity() {
             draw.setColor(penColors[p.ordinal])
         }
         draw.selectPen(Pen.INK)
+
+        // الحفظ: نرجّع الرسم القديم ونحفظ مع كل تغيير
+        store = BoardStore(File(filesDir, "board.json"))
+        draw.onChanged = { saveNow() }
+        store.read()?.let { draw.restore(it) }
 
         eraserIcon = PenIconView(this, PenIconView.ERASER)
         dock = LinearLayout(this).apply { setPadding(dp(6), dp(8), dp(6), dp(8)) }
@@ -110,6 +119,16 @@ class MainActivity : Activity() {
         setContentView(root)
         rebuildDock()
         applyOrientation()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        saveNow()
+    }
+
+    private fun saveNow() {
+        val json = draw.snapshotJson()
+        io.execute { store.write(json) }
     }
 
     private fun panelBg(oval: Boolean = false): GradientDrawable = GradientDrawable().apply {
@@ -290,7 +309,7 @@ class MainActivity : Activity() {
 
     private fun confirmClear() {
         AlertDialog.Builder(this)
-            .setMessage("متأكد إنك عايز تمسح السبورة كلها؟")
+            .setMessage("هل تريد مسح السبورة كلها؟")
             .setPositiveButton("امسح") { _, _ -> draw.clearAll() }
             .setNegativeButton("إلغاء", null)
             .show()
