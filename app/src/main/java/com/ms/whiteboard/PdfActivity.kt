@@ -15,7 +15,6 @@ import android.view.ViewGroup
 import android.widget.AbsListView
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
-import android.widget.GlyphHolder
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
