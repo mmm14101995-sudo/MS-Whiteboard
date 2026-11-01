@@ -15,7 +15,6 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
-import java.io.File
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -26,6 +25,7 @@ class MainActivity : Activity() {
     private lateinit var hScroll: HorizontalScrollView
     private lateinit var eraserIcon: PenIconView
     private lateinit var store: BoardStore
+    private var projectId = "first"
     private val io = Executors.newSingleThreadExecutor()
     private var vertical = true
     private var popup: PopupWindow? = null
@@ -61,6 +61,9 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        projectId = intent.getStringExtra("pid") ?: "first"
+        store = BoardStore(ProjectStore.boardFile(this, projectId))
+
         draw = DrawView(this)
         for (p in Pen.values()) {
             draw.selectPen(p)
@@ -68,8 +71,6 @@ class MainActivity : Activity() {
         }
         draw.selectPen(Pen.INK)
 
-        // الحفظ: نرجّع الرسم القديم ونحفظ مع كل تغيير
-        store = BoardStore(File(filesDir, "board.json"))
         draw.onChanged = { saveNow() }
         store.read()?.let { draw.restore(it) }
 
@@ -98,6 +99,21 @@ class MainActivity : Activity() {
                 .apply { setMargins(dp(8), dp(8), dp(8), dp(12)) }
         )
 
+        // زرار الرجوع للمشاريع
+        val back = TextView(this).apply {
+            text = "→"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = panelBg(oval = true)
+            setOnClickListener { finish() }
+        }
+        root.addView(
+            back,
+            FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END)
+                .apply { setMargins(dp(8), dp(8), dp(8), 0) }
+        )
+
         // زرار تبديل الشريط أفقي / رأسي
         val toggle = TextView(this).apply {
             text = "⇄"
@@ -124,6 +140,7 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         saveNow()
+        ProjectStore.touch(this, projectId)
     }
 
     private fun saveNow() {
@@ -281,7 +298,7 @@ class MainActivity : Activity() {
         for (p in hidden) {
             val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
             ic.setOnClickListener { pickFromMore(p) }
-            list.addView(ic, iconLp())
+            list.addView(ic, LinearLayout.LayoutParams(dp(40), dp(58)).apply { setMargins(0, dp(2), 0, dp(2)) })
         }
         showPopup(list)
     }
@@ -309,7 +326,7 @@ class MainActivity : Activity() {
 
     private fun confirmClear() {
         AlertDialog.Builder(this)
-            .setMessage("هل تريد مسح السبورة كلها؟")
+            .setMessage("متأكد إنك عايز تمسح السبورة كلها؟")
             .setPositiveButton("امسح") { _, _ -> draw.clearAll() }
             .setNegativeButton("إلغاء", null)
             .show()
