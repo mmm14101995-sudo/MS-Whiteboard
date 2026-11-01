@@ -25,6 +25,7 @@ class DrawView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private val palmSize = 100f * density   // أقل حجم لمسة تعتبر كف
     var penWidth = 7f * density
+    var fingerDraws = true                  // الإصبع الصغير يكتب (للتجربة على التليفون)
 
     private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
@@ -40,9 +41,10 @@ class DrawView(context: Context) : View(context) {
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     private var stylusId = -1
-    private var sx = 0f; private var sy = 0f   // آخر نقطة للقلم
-    private var mx = 0f; private var my = 0f   // آخر نقطة منتصف
-    private var sw = 0f                        // آخر سُمك
+    private var realPressure = true
+    private var sx = 0f; private var sy = 0f
+    private var mx = 0f; private var my = 0f
+    private var sw = 0f
     private var eraseId = -1
     private var ex = 0f; private var ey = 0f
 
@@ -79,7 +81,10 @@ class DrawView(context: Context) : View(context) {
         }
     }
 
-    private fun widthFor(p: Float): Float = penWidth * (0.35f + p.coerceIn(0f, 1f))
+    private fun widthFor(p: Float): Float {
+        val q = if (realPressure) p else 0.65f
+        return penWidth * (0.35f + q.coerceIn(0f, 1f))
+    }
 
     private fun startStroke(x: Float, y: Float, p: Float) {
         sx = x; sy = y; mx = x; my = y
@@ -128,14 +133,18 @@ class DrawView(context: Context) : View(context) {
                 val i = e.actionIndex
                 val id = e.getPointerId(i)
                 if (e.actionMasked == MotionEvent.ACTION_DOWN) requestUnbufferedDispatch(e)
-                if (e.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS) {
+                val isStylus = e.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS
+                val major = e.getTouchMajor(i)
+                val free = stylusId == -1 && eraseId == -1
+                if (isStylus || (fingerDraws && free && major < palmSize)) {
                     eraseId = -1
                     stylusId = id
+                    realPressure = isStylus
                     startStroke(e.getX(i), e.getY(i), e.getPressure(i))
-                } else if (stylusId == -1 && eraseId == -1 && e.getTouchMajor(i) >= palmSize) {
+                } else if (free && major >= palmSize) {
                     eraseId = id
                     ex = e.getX(i); ey = e.getY(i)
-                    eraseTo(ex, ey, e.getTouchMajor(i))
+                    eraseTo(ex, ey, major)
                 }
             }
 
