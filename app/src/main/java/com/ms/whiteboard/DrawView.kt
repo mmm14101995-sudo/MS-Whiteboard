@@ -23,9 +23,10 @@ class DrawView(context: Context) : View(context) {
     private var hasDirty = false
 
     private val density = resources.displayMetrics.density
-    private val palmSize = 100f * density   // أقل حجم لمسة تعتبر كف
+    private val palmSize = 100f * density
     var penWidth = 7f * density
-    var fingerDraws = true                  // الإصبع الصغير يكتب (للتجربة على التليفون)
+    var fingerDraws = true
+    var eraserMode = false
 
     private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
@@ -40,6 +41,10 @@ class DrawView(context: Context) : View(context) {
     }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
+    var penColor: Int
+        get() = inkPaint.color
+        set(v) { inkPaint.color = v }
+
     private var stylusId = -1
     private var realPressure = true
     private var sx = 0f; private var sy = 0f
@@ -47,6 +52,11 @@ class DrawView(context: Context) : View(context) {
     private var sw = 0f
     private var eraseId = -1
     private var ex = 0f; private var ey = 0f
+
+    fun clearAll() {
+        bitmap?.eraseColor(Color.TRANSPARENT)
+        invalidate()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         if (w <= 0 || h <= 0) return
@@ -85,6 +95,9 @@ class DrawView(context: Context) : View(context) {
         val q = if (realPressure) p else 0.65f
         return penWidth * (0.35f + q.coerceIn(0f, 1f))
     }
+
+    private fun eraseSize(major: Float): Float =
+        if (eraserMode) max(penWidth * 4f, major) else major
 
     private fun startStroke(x: Float, y: Float, p: Float) {
         sx = x; sy = y; mx = x; my = y
@@ -137,14 +150,21 @@ class DrawView(context: Context) : View(context) {
                 val major = e.getTouchMajor(i)
                 val free = stylusId == -1 && eraseId == -1
                 if (isStylus || (fingerDraws && free && major < palmSize)) {
-                    eraseId = -1
-                    stylusId = id
-                    realPressure = isStylus
-                    startStroke(e.getX(i), e.getY(i), e.getPressure(i))
+                    if (eraserMode) {
+                        stylusId = -1
+                        eraseId = id
+                        ex = e.getX(i); ey = e.getY(i)
+                        eraseTo(ex, ey, eraseSize(major))
+                    } else {
+                        eraseId = -1
+                        stylusId = id
+                        realPressure = isStylus
+                        startStroke(e.getX(i), e.getY(i), e.getPressure(i))
+                    }
                 } else if (free && major >= palmSize) {
                     eraseId = id
                     ex = e.getX(i); ey = e.getY(i)
-                    eraseTo(ex, ey, major)
+                    eraseTo(ex, ey, eraseSize(major))
                 }
             }
 
@@ -158,9 +178,9 @@ class DrawView(context: Context) : View(context) {
                         addPoint(e.getX(i), e.getY(i), e.getPressure(i))
                     } else if (id == eraseId) {
                         for (h in 0 until e.historySize) {
-                            eraseTo(e.getHistoricalX(i, h), e.getHistoricalY(i, h), e.getHistoricalTouchMajor(i, h))
+                            eraseTo(e.getHistoricalX(i, h), e.getHistoricalY(i, h), eraseSize(e.getHistoricalTouchMajor(i, h)))
                         }
-                        eraseTo(e.getX(i), e.getY(i), e.getTouchMajor(i))
+                        eraseTo(e.getX(i), e.getY(i), eraseSize(e.getTouchMajor(i)))
                     }
                 }
             }
