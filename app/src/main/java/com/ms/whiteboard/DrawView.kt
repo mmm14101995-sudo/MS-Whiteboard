@@ -396,4 +396,274 @@ class DrawView(context: Context) : View(context) {
             hlPath.quadTo(sx, sy, midX, midY)
         } else {
             seg.reset()
-            seg.m
+            seg.moveTo(mx, my)
+            seg.quadTo(sx, sy, midX, midY)
+            bmpCanvas?.drawPath(seg, paintFor(p0, s.color, w))
+        }
+        val pad = w + 2f
+        addDirty(mx, my, pad); addDirty(sx, sy, pad); addDirty(midX, midY, pad)
+        mx = midX; my = midY
+        sx = x; sy = y
+        sw = w
+        lastT = t
+        s.add(x, y, target)
+    }
+
+    private fun endStroke() {
+        val s = inkStroke ?: return
+        if (s.pen == Pen.HIGHLIGHTER) {
+            hlPath.lineTo(sx, sy)
+            bmpCanvas?.drawPath(hlPath, paintFor(s.pen, s.color, sw))
+            hlPath.reset()
+            hlActive = false
+        } else {
+            seg.reset()
+            seg.moveTo(mx, my)
+            seg.lineTo(sx, sy)
+            bmpCanvas?.drawPath(seg, paintFor(s.pen, s.color, sw))
+        }
+        addDirty(mx, my, sw + 2f); addDirty(sx, sy, sw + 2f)
+        inkStroke = null
+        onChanged?.invoke()
+    }
+
+    // ---- الممحاة ----
+    private fun startErase(x: Float, y: Float, size: Float) {
+        val s = Stroke(pen, 0, true)
+        strokes.add(s)
+        eraseStroke = s
+        record(listOf(s), emptyList())
+        ex = x; ey = y
+        eraseTo(x, y, size)
+    }
+
+    private fun eraseTo(x: Float, y: Float, size: Float) {
+        erasePaint.strokeWidth = size
+        bmpCanvas?.drawLine(ex, ey, x, y, erasePaint)
+        val pad = size / 2f + 2f
+        addDirty(ex, ey, pad); addDirty(x, y, pad)
+        ex = x; ey = y
+        eraseStroke?.add(x, y, size)
+    }
+
+    // ---- إعادة رسم خط محفوظ ----
+    private fun drawStroke(c: Canvas, s: Stroke) {
+        val n = s.size / 3
+        if (n == 0) return
+        val d = s.data
+
+        if (s.erase) {
+            for (i in 0 until n) {
+                val k = i * 3
+                erasePaint.strokeWidth = d[k + 2]
+                if (i == 0) c.drawLine(d[0], d[1], d[0], d[1], erasePaint)
+                else c.drawLine(d[k - 3], d[k - 2], d[k], d[k + 1], erasePaint)
+            }
+            return
+        }
+
+        if (n == 1) {
+            c.drawPoint(d[0], d[1], paintFor(s.pen, s.color, d[2]))
+            return
+        }
+
+        if (s.pen == Pen.HIGHLIGHTER) {
+            val path = Path()
+            var px0 = d[0]; var py0 = d[1]
+            path.moveTo(d[0], d[1])
+            for (i in 1 until n) {
+                val k = i * 3
+                val midX = (d[k] + px0) / 2f
+                val midY = (d[k + 1] + py0) / 2f
+                path.quadTo(px0, py0, midX, midY)
+                px0 = d[k]; py0 = d[k + 1]
+            }
+            path.lineTo(px0, py0)
+            c.drawPath(path, paintFor(s.pen, s.color, d[2]))
+            return
+        }
+
+        val kf = if (s.pen == Pen.BRUSH) 0.3f else 0.5f
+        var sx0 = d[0]; var sy0 = d[1]
+        var mx0 = d[0]; var my0 = d[1]
+        var sw0 = d[2]
+        val paint = paintFor(s.pen, s.color, sw0)
+        for (i in 1 until n) {
+            val k = i * 3
+            val x = d[k]; val y = d[k + 1]; val target = d[k + 2]
+            val midX = (x + sx0) / 2f
+            val midY = (y + sy0) / 2f
+            val w = sw0 * (1f - kf) + target * kf
+            seg.reset()
+            seg.moveTo(mx0, my0)
+            seg.quadTo(sx0, sy0, midX, midY)
+            paint.strokeWidth = w
+            c.drawPath(seg, paint)
+            mx0 = midX; my0 = midY
+            sx0 = x; sy0 = y
+            sw0 = w
+        }
+        seg.reset()
+        seg.moveTo(mx0, my0)
+        seg.lineTo(sx0, sy0)
+        paint.strokeWidth = sw0
+        c.drawPath(seg, paint)
+    }
+
+    // ---- بداية إصبعين: تكبير وتحريك ----
+    private fun beginGesture(e: MotionEvent) {
+        if (eraseId != -1) {
+            eraseStroke = null
+            eraseId = -1
+            onChanged?.invoke()
+        }
+        panId = -1
+        gesture = true
+        gIdA = e.getPointerId(0)
+        gIdB = e.getPointerId(1)
+        gDist = hypot(e.getX(1) - e.getX(0), e.getY(1) - e.getY(0)).coerceAtLeast(1f)
+        gScale = zoom
+        gTx = tx
+        gTy = ty
+        gMx = (e.getX(0) + e.getX(1)) / 2f
+        gMy = (e.getY(0) + e.getY(1)) / 2f
+    }
+
+    private fun moveGesture(e: MotionEvent) {
+        val a = e.findPointerIndex(gIdA)
+        val b = e.findPointerIndex(gIdB)
+        if (a < 0 || b < 0) return
+        val ax = e.getX(a); val ay = e.getY(a)
+        val bx = e.getX(b); val by = e.getY(b)
+        val dist = hypot(bx - ax, by - ay).coerceAtLeast(1f)
+        val mx2 = (ax + bx) / 2f
+        val my2 = (ay + by) / 2f
+        val nz = (gScale * dist / gDist).coerceIn(minZoom, maxZoom)
+        // النقطة اللي كانت تحت المنتصف في البداية تفضل تحته
+        val ox = (gMx - gTx) / gScale
+        val oy = (gMy - gTy) / gScale
+        zoom = nz
+        tx = mx2 - ox * nz
+        ty = my2 - oy * nz
+        clampPan()
+        invalidate()
+        onZoomChanged?.invoke(zoom)
+    }
+
+    // ---- اللمس ----
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                val i = e.actionIndex
+                val id = e.getPointerId(i)
+                if (e.actionMasked == MotionEvent.ACTION_DOWN) requestUnbufferedDispatch(e)
+                val isStylus = e.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS
+                val major = e.getTouchMajor(i)
+                val x = e.getX(i)
+                val y = e.getY(i)
+                val bothSmall = e.pointerCount >= 2 &&
+                        e.getTouchMajor(0) < palmSize && e.getTouchMajor(1) < palmSize
+
+                when {
+                    // القلم: يرسم أو يمسح لو الممحاة مفعلة
+                    isStylus -> {
+                        if (eraserMode) {
+                            if (eraseId == -1) {
+                                eraseId = id
+                                startErase(cX(x), cY(y), eraseSize(major))
+                            }
+                        } else if (stylusId == -1) {
+                            realPressure = true
+                            stylusId = id
+                            startStroke(cX(x), cY(y), e.getPressure(i), e.eventTime)
+                        }
+                    }
+                    // كف اليد: يمسح حتى وانت بتكتب
+                    major >= palmSize -> {
+                        if (eraseId == -1) {
+                            eraseId = id
+                            startErase(cX(x), cY(y), eraseSize(major))
+                        }
+                    }
+                    // إصبعين صغيرين: تكبير وتحريك
+                    stylusId == -1 && bothSmall -> beginGesture(e)
+                    // إصبع واحد صغير وإنت مكبّر: تحريك
+                    zoom > 1f && panId == -1 && !gesture -> {
+                        panId = id
+                        lastX = x
+                        lastY = y
+                    }
+                    fingerDraws && stylusId == -1 && !gesture -> {
+                        realPressure = false
+                        stylusId = id
+                        startStroke(cX(x), cY(y), 0.7f, e.eventTime)
+                    }
+                }
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (gesture) moveGesture(e)
+                for (i in 0 until e.pointerCount) {
+                    val id = e.getPointerId(i)
+                    when {
+                        id == stylusId -> {
+                            for (h in 0 until e.historySize) {
+                                addPoint(
+                                    cX(e.getHistoricalX(i, h)), cY(e.getHistoricalY(i, h)),
+                                    e.getHistoricalPressure(i, h), e.getHistoricalEventTime(h)
+                                )
+                            }
+                            addPoint(cX(e.getX(i)), cY(e.getY(i)), e.getPressure(i), e.eventTime)
+                        }
+                        id == eraseId -> {
+                            for (h in 0 until e.historySize) {
+                                eraseTo(
+                                    cX(e.getHistoricalX(i, h)), cY(e.getHistoricalY(i, h)),
+                                    eraseSize(e.getHistoricalTouchMajor(i, h))
+                                )
+                            }
+                            eraseTo(cX(e.getX(i)), cY(e.getY(i)), eraseSize(e.getTouchMajor(i)))
+                        }
+                        id == panId && !gesture -> {
+                            val nx = e.getX(i)
+                            val ny = e.getY(i)
+                            tx += nx - lastX
+                            ty += ny - lastY
+                            lastX = nx
+                            lastY = ny
+                            clampPan()
+                            invalidate()
+                        }
+                    }
+                }
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                val id = e.getPointerId(e.actionIndex)
+                if (id == stylusId) {
+                    endStroke()
+                    stylusId = -1
+                } else if (id == eraseId) {
+                    eraseStroke = null
+                    eraseId = -1
+                    onChanged?.invoke()
+                } else if (id == panId) {
+                    panId = -1
+                }
+                if (gesture && (id == gIdA || id == gIdB)) gesture = false
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                if (inkStroke != null) endStroke()
+                stylusId = -1
+                eraseId = -1
+                eraseStroke = null
+                panId = -1
+                gesture = false
+                onChanged?.invoke()
+            }
+        }
+        flushDirty()
+        return true
+    }
+}
