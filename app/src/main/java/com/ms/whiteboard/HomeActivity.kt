@@ -47,12 +47,13 @@ class HomeActivity : Activity() {
             setPadding(dp(16), dp(24), dp(16), dp(16))
         }
 
-        // الهيدر: العنوان + زرار الثيم
+        // الهيدر: العنوان + زرار التحديث + زرار الثيم
         title = TextView(this).apply {
             textSize = 26f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Theme.TEXT)
         }
+        val updateBtn = UpdateChecker.button(this)
         val themeBtn = GlyphView(this, if (Theme.dark) GlyphView.SUN else GlyphView.MOON).apply {
             background = Theme.box(this@HomeActivity, Theme.PANEL, 0f, Theme.BORDER, 1f, oval = true)
             setOnClickListener {
@@ -64,6 +65,7 @@ class HomeActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(title, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(updateBtn, LinearLayout.LayoutParams(WRAP, dp(44)).apply { setMargins(0, 0, dp(8), 0) })
             addView(themeBtn, LinearLayout.LayoutParams(dp(44), dp(44)))
         }
         root.addView(header, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, 0, 0, dp(14)) })
