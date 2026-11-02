@@ -42,6 +42,10 @@ class MainActivity : Activity() {
     private val penColors = IntArray(Pen.values().size)
     private val prefs by lazy { getSharedPreferences("pens", Context.MODE_PRIVATE) }
 
+    private var sizeIdx = 1
+    private var paperStyle = PaperStyle.GRID
+    private var paperColor = 0xFFFFFFFF.toInt()
+
     // الظاهر في الشريط، والباقي في زرار +
     private val visible = mutableListOf(Pen.INK, Pen.FEATHER, Pen.HIGHLIGHTER, Pen.NEON)
     private val hidden = mutableListOf(Pen.MARKER, Pen.PENCIL, Pen.STRIPED)
@@ -56,6 +60,8 @@ class MainActivity : Activity() {
     )
     private val dayQuick = intArrayOf(0xFF000000.toInt(), 0xFFE53935.toInt(), 0xFF1E88E5.toInt(), 0xFF43A047.toInt(), 0xFFFFEB3B.toInt(), 0xFF8E24AA.toInt())
     private val nightQuick = intArrayOf(0xFFFFFFFF.toInt(), 0xFFEF5350.toInt(), 0xFF38BDF8.toInt(), 0xFF66BB6A.toInt(), 0xFFFFEB3B.toInt(), 0xFFAB47BC.toInt())
+    private val dayPapers = intArrayOf(0xFFFFFFFF.toInt(), 0xFFFFF8E7.toInt(), 0xFFE8F5E9.toInt(), 0xFFE3F2FD.toInt(), 0xFFF5F3FF.toInt(), 0xFFF1F5F9.toInt())
+    private val nightPapers = intArrayOf(0xFF0F172A.toInt(), 0xFF1E293B.toInt(), 0xFF1C2A1E.toInt(), 0xFF1E1B2E.toInt(), 0xFF1F2933.toInt(), 0xFF111827.toInt())
     private val paletteColors = intArrayOf(
         0xFF0F172A.toInt(), 0xFF1E293B.toInt(), 0xFF475569.toInt(), 0xFF94A3B8.toInt(), 0xFFE2E8F0.toInt(), 0xFFFFFFFF.toInt(),
         0xFFDC2626.toInt(), 0xFFEF4444.toInt(), 0xFFF97316.toInt(), 0xFFF59E0B.toInt(), 0xFFFACC15.toInt(), 0xFF84CC16.toInt(),
@@ -67,9 +73,11 @@ class MainActivity : Activity() {
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     private fun quickColors(): IntArray = if (Theme.dark) nightQuick else dayQuick
+    private fun papers(): IntArray = if (Theme.dark) nightPapers else dayPapers
 
-    // كل وضع (نهاري/ليلي) ليه ألوان أقلام محفوظة لوحده
+    // كل وضع (نهاري/ليلي) ليه ألوان أقلام وورق محفوظة لوحده
     private fun colorKey(i: Int): String = (if (Theme.dark) "n" else "d") + "c$i"
+    private fun paperKey(): String = if (Theme.dark) "pcn" else "pcd"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,9 +90,11 @@ class MainActivity : Activity() {
         for (i in penColors.indices) {
             penColors[i] = prefs.getInt(colorKey(i), (if (Theme.dark) nightPens else dayPens)[i])
         }
+        paperStyle = PaperStyle.values()[prefs.getInt("ps", PaperStyle.GRID.ordinal).coerceIn(0, PaperStyle.values().size - 1)]
+        paperColor = prefs.getInt(paperKey(), papers()[0])
 
         draw = DrawView(this)
-        draw.setPaper(Theme.PAPER, Theme.GRID)
+        applyPaper()
         for (p in Pen.values()) {
             draw.selectPen(p)
             draw.setColor(penColors[p.ordinal])
@@ -139,6 +149,23 @@ class MainActivity : Activity() {
         if (!::undoIcon.isInitialized) return
         undoIcon.alpha = if (draw.canUndo) 1f else 0.3f
         redoIcon.alpha = if (draw.canRedo) 1f else 0.3f
+    }
+
+    // ---- الصفحة (نوعها ولونها) ----
+    private fun applyPaper() {
+        draw.setPaperStyle(paperStyle)
+        draw.setPaper(paperColor, gridFor(paperColor))
+    }
+
+    private fun saveAndApplyPaper() {
+        prefs.edit().putInt("ps", paperStyle.ordinal).putInt(paperKey(), paperColor).apply()
+        applyPaper()
+    }
+
+    // لون الخطوط بيتحسب من لون الورقة: فاتح على الورق الفاتح، وفاتح شوية على الداكن
+    private fun gridFor(c: Int): Int {
+        val lum = 0.299f * Color.red(c) + 0.587f * Color.green(c) + 0.114f * Color.blue(c)
+        return if (lum > 128f) 0x1F0F172A else 0x2EFFFFFF
     }
 
     // ---- الشريط العلوي ----
@@ -219,22 +246,36 @@ class MainActivity : Activity() {
         addView(child, FrameLayout.LayoutParams(MATCH, MATCH))
     }
 
+    // مقاس ثابت وهامش لأي عنصر قبل ما يتضاف للمجموعة
+    private fun <T : View> sized(v: T, w: Int, h: Int, m: Int = 2): T {
+        v.layoutParams = LinearLayout.LayoutParams(dp(w), dp(h)).apply { setMargins(dp(m), dp(m), dp(m), dp(m)) }
+        return v
+    }
+
+    // المجموعة الواحدة زي .bgrp في المنصة: خلفية شفافة، وحد خفيف، وزوايا مستديرة
+    private fun group(items: List<View>): LinearLayout {
+        val g = LinearLayout(this).apply {
+            orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            background = if (Theme.dark) {
+                Theme.box(this@MainActivity, 0x14FFFFFF, 14f, 0x1FFFFFFF, 1f)
+            } else {
+                Theme.box(this@MainActivity, 0x14000000, 14f, 0x1F000000, 1f)
+            }
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+        }
+        for (v in items) {
+            (v.parent as? ViewGroup)?.removeView(v)
+            if (v.layoutParams == null) sized(v, 40, 40)
+            g.addView(v)
+        }
+        return g
+    }
+
     private fun selectedBg(): GradientDrawable = GradientDrawable(
         GradientDrawable.Orientation.LEFT_RIGHT,
         intArrayOf(0x4038BDF8, 0x40FACC15)
     ).apply { cornerRadius = dp(12).toFloat() }
-
-    private fun penLp(): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(dp(40), dp(56)).apply { setMargins(dp(3), dp(2), dp(3), dp(2)) }
-
-    private fun sizeLp(w: Int, h: Int, m: Int): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(dp(w), dp(h)).apply { setMargins(dp(m), dp(m), dp(m), dp(m)) }
-
-    private fun divider(): View = View(this).apply { setBackgroundColor(Theme.BORDER) }
-
-    private fun dividerLp(): LinearLayout.LayoutParams =
-        if (vertical) LinearLayout.LayoutParams(dp(26), dp(1)).apply { setMargins(0, dp(6), 0, dp(6)) }
-        else LinearLayout.LayoutParams(dp(1), dp(26)).apply { setMargins(dp(6), 0, dp(6), 0) }
 
     private fun swatchBg(c: Int, selected: Boolean) = Theme.box(
         this, c, 7f,
@@ -270,57 +311,71 @@ class MainActivity : Activity() {
                 orientation = innerOrient
                 gravity = Gravity.CENTER
             }
-            for (k in i until minOf(i + 2, items.size)) line.addView(items[k], sizeLp(26, 26, 3))
+            for (k in i until minOf(i + 2, items.size)) line.addView(sized(items[k], 26, 26, 3))
             outer.addView(line)
             i += 2
         }
         return outer
     }
 
-    // ---- محتوى الشريط: مفرود أو مضموم ----
+    private fun toolBtn(label: String, color: Int, onTap: () -> Unit): TextView = TextView(this).apply {
+        text = label
+        textSize = 12f
+        setTextColor(color)
+        gravity = Gravity.CENTER
+        setTypeface(typeface, Typeface.BOLD)
+        background = Theme.box(this@MainActivity, 0x1AFFFFFF, 10f)
+        setOnClickListener { onTap() }
+    }
+
+    // ---- محتوى الشريط: 4 مجموعات ----
     private fun rebuildDock() {
         dock.removeAllViews()
+        dock.orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
         dock.gravity = Gravity.CENTER
         penIcons.clear()
         penWraps.clear()
         swatches.clear()
 
-        eraserIcon.setOnClickListener {
-            draw.eraserMode = true
-            refresh()
-        }
-
         val shown = if (bar.collapsed) listOf(draw.pen) else visible
+        val penItems = ArrayList<View>()
         for (p in shown) {
-            val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
-            ic.setOnClickListener {
-                if (bar.collapsed) bar.setCollapsed(false) else onPenTap(p)
+            val ic = PenIconView(this, p.ordinal).apply {
+                color = penColors[p.ordinal]
+                setOnClickListener {
+                    if (bar.collapsed) bar.setCollapsed(false) else onPenTap(p)
+                }
             }
             penIcons[p] = ic
             val w = wrap(ic)
             penWraps[p] = w
-            dock.addView(w, penLp())
+            penItems.add(sized(w, 40, 56, 2))
         }
 
         if (bar.collapsed) {
-            dock.addView(eraserWrap, penLp())
+            penItems.add(sized(eraserWrap, 40, 56, 2))
+            dock.addView(group(penItems))
             refresh()
             return
         }
 
-        dock.addView(
-            TextView(this).apply {
-                text = "+"
-                textSize = 20f
-                setTextColor(Theme.MUTED)
-                gravity = Gravity.CENTER
-                background = Theme.box(this@MainActivity, 0x1AFFFFFF, 0f, oval = true)
-                setOnClickListener { showMore() }
-            },
-            sizeLp(30, 30, 3)
+        // مجموعة الأقلام + زرار الباقي
+        penItems.add(
+            sized(
+                TextView(this).apply {
+                    text = "+"
+                    textSize = 20f
+                    setTextColor(Theme.MUTED)
+                    gravity = Gravity.CENTER
+                    background = Theme.box(this@MainActivity, 0x1AFFFFFF, 0f, oval = true)
+                    setOnClickListener { showMore() }
+                },
+                30, 30, 3
+            )
         )
-        dock.addView(divider(), dividerLp())
+        dock.addView(group(penItems))
 
+        // مجموعة الألوان
         val items = ArrayList<View>()
         for (c in quickColors()) {
             val cell = View(this)
@@ -329,28 +384,38 @@ class MainActivity : Activity() {
             items.add(cell)
         }
         items.add(customBtn())
-        dock.addView(swatchGrid(items), LinearLayout.LayoutParams(WRAP, WRAP))
-        dock.addView(divider(), dividerLp())
+        dock.addView(group(listOf(swatchGrid(items))))
 
-        dock.addView(eraserWrap, penLp())
-        dock.addView(
-            TextView(this).apply {
-                text = "مسح"
-                textSize = 12f
-                setTextColor(Theme.DANGER)
-                gravity = Gravity.CENTER
-                background = Theme.box(this@MainActivity, 0x33EF4444, 13f)
-                setOnClickListener { confirmClear() }
-            },
-            LinearLayout.LayoutParams(dp(44), dp(26)).apply { setMargins(dp(3), dp(8), dp(3), dp(2)) }
-        )
+        // مجموعة الأدوات: ممحاة، وحجم، ومسح
+        eraserWrap.setOnClickListener { activateEraser() }
+        eraserIcon.setOnClickListener { activateEraser() }
+        val sizeLabels = arrayOf("S", "M", "L", "XL")
+        val sizeBtn = toolBtn(sizeLabels[sizeIdx], Theme.TEXT) { }
+        sizeBtn.setOnClickListener {
+            draw.cycleSize()
+            sizeIdx = (sizeIdx + 1) % sizeLabels.size
+            sizeBtn.text = sizeLabels[sizeIdx]
+        }
+        val clearBtn = toolBtn("مسح", Theme.DANGER) { confirmClear() }
+        dock.addView(group(listOf(sized(eraserWrap, 40, 40, 2), sized(sizeBtn, 40, 40, 2), sized(clearBtn, 40, 40, 2))))
 
+        // مجموعة الصفحة: نوعها ولونها
+        val paperBtn = toolBtn("ورق", Theme.TEXT) { showPaperPicker() }
+        dock.addView(group(listOf(sized(paperBtn, 44, 40, 2))))
+
+        refresh()
+    }
+
+    private fun activateEraser() {
+        draw.eraserMode = true
         refresh()
     }
 
     private fun refresh() {
         for ((p, w) in penWraps) w.background = if (!draw.eraserMode && draw.pen == p) selectedBg() else null
-        eraserWrap.background = if (draw.eraserMode) selectedBg() else null
+        if (::eraserWrap.isInitialized) {
+            eraserWrap.background = if (draw.eraserMode) selectedBg() else null
+        }
         val current = penColors[draw.pen.ordinal]
         for ((c, v) in swatches) {
             v.background = swatchBg(c, !draw.eraserMode && c == current)
@@ -447,7 +512,7 @@ class MainActivity : Activity() {
         for (p in hidden) {
             val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
             ic.setOnClickListener { pickFromMore(p) }
-            list.addView(ic, penLp())
+            list.addView(ic, LinearLayout.LayoutParams(dp(40), dp(56)).apply { setMargins(dp(3), dp(2), dp(3), dp(2)) })
         }
         showPopup(list)
     }
@@ -460,6 +525,55 @@ class MainActivity : Activity() {
         popup?.dismiss()
         draw.selectPen(p)
         rebuildDock()
+    }
+
+    // نافذة الصفحة: نوعها (فاضية، مربعات، مسطرة، نقط) ولونها
+    private fun showPaperPicker() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+        }
+        val styles = listOf(
+            "فاضية" to PaperStyle.BLANK,
+            "مربعات" to PaperStyle.GRID,
+            "مسطرة" to PaperStyle.LINED,
+            "نقط" to PaperStyle.DOTS
+        )
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((label, st) in styles) {
+            val tv = TextView(this).apply {
+                text = label
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setTextColor(Theme.TEXT)
+                background = Theme.box(this@MainActivity, if (paperStyle == st) 0x4038BDF8 else 0x14FFFFFF, 10f)
+                setOnClickListener {
+                    paperStyle = st
+                    saveAndApplyPaper()
+                    popup?.dismiss()
+                }
+            }
+            row.addView(tv, LinearLayout.LayoutParams(dp(64), dp(36)).apply { setMargins(dp(3), 0, dp(3), 0) })
+        }
+        box.addView(row)
+
+        val colorRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        for (c in papers()) {
+            val sw = View(this).apply {
+                background = Theme.box(this@MainActivity, c, 0f, if (c == paperColor) Theme.ACCENT else Theme.BORDER, if (c == paperColor) 2.5f else 1f, oval = true)
+                setOnClickListener {
+                    paperColor = c
+                    saveAndApplyPaper()
+                    popup?.dismiss()
+                }
+            }
+            colorRow.addView(sw, LinearLayout.LayoutParams(dp(30), dp(30)).apply { setMargins(dp(3), 0, dp(3), 0) })
+        }
+        box.addView(colorRow)
+        showPopup(box)
     }
 
     private fun showPopup(content: View) {
