@@ -47,10 +47,14 @@ class DrawView(context: Context) : View(context) {
     val canUndo: Boolean get() = undoStack.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
 
-    private val maxBmpScale = 2.5f
-    private var bmpScale = 1f
+    // الرسم المخزن بحجم الشاشة، ومعاه وضع التكبير اللي اترسم بيه
     private var bitmap: Bitmap? = null
     private var bmpCanvas: Canvas? = null
+    private var cacheZoom = 1f
+    private var cacheTx = 0f
+    private var cacheTy = 0f
+    private var lastSettled = 1f
+
     private val path = Path()
     private val dirty = RectF()
     private var hasDirty = false
@@ -68,13 +72,13 @@ class DrawView(context: Context) : View(context) {
             tool = if (v) Tool.ERASER else Tool.PEN
         }
 
-    // ---- التكبير والتصغير ----
+    // ---- التكبير والتصغير (سبورة مفتوحة من غير حدود) ----
     var zoom = 1f
         private set
     private var tx = 0f
     private var ty = 0f
-    private val minZoom = 0.5f
-    private val maxZoom = 5f
+    private val minZoom = 0.25f
+    private val maxZoom = 8f
 
     private var gesture = false
     private var gIdA = -1
@@ -113,8 +117,12 @@ class DrawView(context: Context) : View(context) {
 
     private var paperColor = 0xFFFFFFFF.toInt()
     private var paperStyle = PaperStyle.GRID
-    private val gridPaint = Paint().apply { style = Paint.Style.STROKE; strokeWidth = density }
+    private val gridPaint = Paint().apply { style = Paint.Style.STROKE }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = 0x40808080
+    }
 
     private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -266,7 +274,8 @@ class DrawView(context: Context) : View(context) {
 
     fun resetZoom() {
         zoom = 1f
-        clampPan()
+        tx = 0f
+        ty = 0f
         settleZoom()
         invalidate()
         onZoomChanged?.invoke(zoom)
@@ -279,27 +288,18 @@ class DrawView(context: Context) : View(context) {
         zoom = nz
         tx = cx - ox * nz
         ty = cy - oy * nz
-        clampPan()
         settleZoom()
         invalidate()
         onZoomChanged?.invoke(zoom)
     }
 
-    private fun clampPan() {
-        if (zoom <= 1f) {
-            tx = width * (1f - zoom) / 2f
-            ty = height * (1f - zoom) / 2f
-            return
-        }
-        tx = tx.coerceIn(width * (1f - zoom), 0f)
-        ty = ty.coerceIn(height * (1f - zoom), 0f)
-    }
-
+    // بعد ما التكبير يخلص: نعيد رسم الخطوط بالحجم الحقيقي عشان تبقى حادة
     private fun settleZoom() {
-        if (coordW <= 0) return
-        val target = zoom.coerceIn(1f, maxBmpScale)
-        if (abs(target - bmpScale) > 0.05f) {
-            rebuildBitmap(target)
+        if (width <= 0 || height <= 0) return
+        rebuildBitmap()
+        val target = zoom.coerceIn(1f, 2.5f)
+        if (abs(target - lastSettled) > 0.05f) {
+            lastSettled = target
             onZoomSettled?.invoke(target)
         }
     }
@@ -345,7 +345,7 @@ class DrawView(context: Context) : View(context) {
     }
 
     private fun afterHistory() {
-        if (coordW > 0 && coordH > 0) rebuildBitmap()
+        rebuildBitmap()
         invalidate()
         onChanged?.invoke()
         onHistoryChanged?.invoke()
@@ -367,6 +367,7 @@ class DrawView(context: Context) : View(context) {
         onHistoryChanged?.invoke()
     }
 
+    // لو حجم الشاشة اتغير (دوران مثلاً) بنحجّم الخطوط عشان تفضل مظبوطة على الصفحة
     private fun layoutTo(w: Int, h: Int) {
         if (coordW > 0 && coordH > 0 && (coordW != w || coordH != h)) {
             val fx = w.toFloat() / coordW
@@ -385,19 +386,46 @@ class DrawView(context: Context) : View(context) {
         rebuildBitmap()
     }
 
-    private fun rebuildBitmap(sc: Float = bmpScale) {
-        if (coordW <= 0 || coordH <= 0) return
-        bmpScale = sc
-        val nb = Bitmap.createBitmap(
-            (coordW * sc).toInt().coerceAtLeast(1),
-            (coordH * sc).toInt().coerceAtLeast(1),
-            Bitmap.Config.ARGB_8888
-        )
-        val nc = Canvas(nb)
-        nc.scale(sc, sc)
-        for (s in strokes) drawStroke(nc, s)
-        bitmap = nb
-        bmpCanvas = nc
+    // الخط يتعدّ مرئي لو أي نقطة منه جوه المستطيل
+    private fun touches(s: Stroke, l: Float, t: Float, r: Float, b: Float): Boolean {
+        val d = s.data
+        var i = 0
+        while (i < s.size) {
+            val x = d[i]
+            val y = d[i + 1]
+            if (x >= l && x <= r && y >= t && y <= b) return true
+            i += 3
+        }
+        return false
+    }
+
+    // بنرسم الخطوط على صورة بحجم الشاشة بالظبط، وبالتكبير الحالي
+    private fun rebuildBitmap() {
+        if (width <= 0 || height <= 0) return
+        var bm = bitmap
+        if (bm == null || bm.width != width || bm.height != height) {
+            bm = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            bitmap = bm
+            bmpCanvas = Canvas(bm)
+        } else {
+            bm.eraseColor(Color.TRANSPARENT)
+        }
+        val nc = bmpCanvas ?: return
+        nc.setMatrix(null)
+        nc.translate(tx, ty)
+        nc.scale(zoom, zoom)
+        cacheZoom = zoom
+        cacheTx = tx
+        cacheTy = ty
+
+        val pad = 160f
+        val l = -tx / zoom - pad
+        val t = -ty / zoom - pad
+        val r = (width - tx) / zoom + pad
+        val b = (height - ty) / zoom + pad
+        for (s in strokes) {
+            if (touches(s, l, t, r, b)) drawStroke(nc, s)
+        }
         pendingRebuild = false
         lastRebuild = System.currentTimeMillis()
         invalidate()
@@ -408,12 +436,12 @@ class DrawView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(Theme.BG)
+        // الورقة بتملا الشاشة كلها
+        canvas.drawColor(paperColor)
+
         canvas.save()
         canvas.translate(tx, ty)
         canvas.scale(zoom, zoom)
-        canvas.clipRect(0f, 0f, coordW.toFloat(), coordH.toFloat())
-        canvas.drawColor(paperColor)
 
         val u = underlay
         if (u != null) {
@@ -425,20 +453,33 @@ class DrawView(context: Context) : View(context) {
             canvas.drawBitmap(u, null, RectF(l, t, l + dw, t + dh), bitmapPaint)
         } else {
             drawPaper(canvas)
+            // إطار خفيف يوضح الصفحة الأصلية
+            borderPaint.strokeWidth = 1.5f * density / zoom
+            canvas.drawRect(0f, 0f, coordW.toFloat(), coordH.toFloat(), borderPaint)
+        }
+        canvas.restore()
+
+        // الخطوط المرسومة: بنعرضها بالفرق بين وضع الرسم ووضع التكبير الحالي
+        val bm = bitmap
+        if (bm != null) {
+            val r = zoom / cacheZoom
+            canvas.save()
+            canvas.translate(tx - cacheTx * r, ty - cacheTy * r)
+            canvas.scale(r, r)
+            canvas.drawBitmap(bm, 0f, 0f, bitmapPaint)
+            canvas.restore()
         }
 
-        bitmap?.let {
-            canvas.drawBitmap(it, null, RectF(0f, 0f, coordW.toFloat(), coordH.toFloat()), bitmapPaint)
-        }
-
-        // معاينة التظليل وهو بيتكتب
+        // معاينة التظليل ومؤشر الممحاة
+        canvas.save()
+        canvas.translate(tx, ty)
+        canvas.scale(zoom, zoom)
         val pt = painter
         if (pt != null && pt.pen == Pen.HIGHLIGHTER) {
             hlPaint.color = pt.col
             hlPaint.strokeWidth = pt.penW
             canvas.drawPath(pt.strokePath, hlPaint)
         }
-
         if (showCursor) {
             cursorPaint.strokeWidth = 1.5f * density / zoom
             canvas.drawCircle(ex, ey, eraseRadius, cursorPaint)
@@ -451,9 +492,10 @@ class DrawView(context: Context) : View(context) {
         if (paperStyle == PaperStyle.BLANK) return
         val clip = canvas.clipBounds
         val step = (if (paperStyle == PaperStyle.LINED) 32f else 40f) * density
+        gridPaint.strokeWidth = density / zoom
 
         if (paperStyle == PaperStyle.DOTS) {
-            val r = 1.4f * density
+            val r = max(1.4f * density, 1.2f / zoom)
             var y = (clip.top / step).toInt() * step
             while (y <= clip.bottom) {
                 var x = (clip.left / step).toInt() * step
@@ -791,7 +833,6 @@ class DrawView(context: Context) : View(context) {
         zoom = nz
         tx = mx2 - ox * nz
         ty = my2 - oy * nz
-        clampPan()
         invalidate()
         onZoomChanged?.invoke(zoom)
     }
