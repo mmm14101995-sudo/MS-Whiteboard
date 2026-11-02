@@ -19,10 +19,13 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 
-// الأقلام: الأولانية الخمسة الأولى كانت موجودة، والجديد بيتضاف في الآخر عشان الحفظ القديم ميتلخبطش
+// الأقلام: الترتيب ده محفوظ في الملفات، فمتغيرش ترتيبه
 enum class Pen { INK, PENCIL, MARKER, HIGHLIGHTER, BRUSH, FEATHER, NEON, STRIPED }
 
 class DrawView(context: Context) : View(context) {
+
+    // الأداة الحالية: قلم أو ممحاة
+    private enum class Tool { PEN, ERASER }
 
     var onChanged: (() -> Unit)? = null
     var onHistoryChanged: (() -> Unit)? = null
@@ -52,7 +55,15 @@ class DrawView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private val palmSize = 100f * density
     var penWidth = 7f * density
-    var eraserMode = false
+
+    private var tool = Tool.PEN
+
+    // الممحاة: true لما الأداة الحالية ممحاة
+    var eraserMode: Boolean
+        get() = tool == Tool.ERASER
+        set(v) {
+            tool = if (v) Tool.ERASER else Tool.PEN
+        }
 
     // ---- التكبير والتصغير ----
     var zoom = 1f
@@ -143,8 +154,9 @@ class DrawView(context: Context) : View(context) {
         color = 0xAA94A3B8.toInt()
     }
 
-    // ---- الممحاة (بتقص الخطوط بالمسافة) ----
-    private val eraserScreenRadius = 16f * density
+    // ---- الممحاة (بتقص الخطوط اللي جوه الدايرة) ----
+    private val eraserScreenRadius = 20f * density
+    private val fingerEraseRadius = 24f * density
     private var eraseAction: Action? = null
     private var eraseRadius = 0f
     private var ex = 0f
@@ -159,7 +171,7 @@ class DrawView(context: Context) : View(context) {
     private var realPressure = true
     private var lastT = 0L
 
-    // ---- المرسوم حالياً: بيكتب قلم ----
+    // ---- المرسوم حالياً ----
     // كل قلم ليه طريقة رسم، والخط المحفوظ بيترسم بنفس الطريقة بالظبط
     private inner class Painter(val pen: Pen, val col: Int) {
         var sx = 0f
@@ -214,7 +226,7 @@ class DrawView(context: Context) : View(context) {
     // ---- واجهة للشريط ----
     fun selectPen(p: Pen) {
         pen = p
-        eraserMode = false
+        tool = Tool.PEN
     }
 
     fun setColor(c: Int) {
@@ -608,7 +620,13 @@ class DrawView(context: Context) : View(context) {
         rebuildBitmap()
     }
 
-    // ---- الممحاة: بتقص الخطوط اللي جوه الدايرة ----
+    // ---- الممحاة ----
+    private fun beginErase(id: Int, x: Float, y: Float, rBoard: Float) {
+        if (eraseId != -1) return
+        eraseId = id
+        startErase(x, y, rBoard)
+    }
+
     private fun startErase(x: Float, y: Float, r: Float) {
         val act = Action(ArrayList(), ArrayList())
         undoStack.add(act)
@@ -637,6 +655,7 @@ class DrawView(context: Context) : View(context) {
         invalidate()
     }
 
+    // بتقص الخطوط اللي جوه الدايرة وتسيب الباقي
     private fun cutStrokes(cx: Float, cy: Float, r: Float) {
         val act = eraseAction ?: return
         val snapshot = ArrayList(strokes)
@@ -710,9 +729,7 @@ class DrawView(context: Context) : View(context) {
 
     // ---- بداية إصبعين: تكبير وتحريك ----
     private fun beginGesture(e: MotionEvent) {
-        if (eraseId != -1) {
-            endErase()
-        }
+        if (eraseId != -1) endErase()
         gesture = true
         gIdA = e.getPointerId(0)
         gIdB = e.getPointerId(1)
@@ -751,45 +768,50 @@ class DrawView(context: Context) : View(context) {
                 val i = e.actionIndex
                 val id = e.getPointerId(i)
                 if (e.actionMasked == MotionEvent.ACTION_DOWN) requestUnbufferedDispatch(e)
-                val tool = e.getToolType(i)
-                val isStylus = tool == MotionEvent.TOOL_TYPE_STYLUS
-                val isEraserTip = tool == MotionEvent.TOOL_TYPE_ERASER
+                val tool0 = e.getToolType(i)
+                val isStylus = tool0 == MotionEvent.TOOL_TYPE_STYLUS
+                val isEraserTip = tool0 == MotionEvent.TOOL_TYPE_ERASER
                 val major = e.getTouchMajor(i)
                 val x = e.getX(i)
                 val y = e.getY(i)
+                val bx = cX(x)
+                val by = cY(y)
                 val bothSmall = e.pointerCount >= 2 &&
                         e.getTouchMajor(0) < palmSize && e.getTouchMajor(1) < palmSize
 
                 when {
-                    isEraserTip || (isStylus && eraserMode) -> {
-                        if (eraseId == -1) {
-                            eraseId = id
-                            startErase(cX(x), cY(y), eraserScreenRadius / zoom)
-                        }
+                    // طرف الممحاة في القلم، أو القلم نفسه وإحنا في وضع الممحاة
+                    isEraserTip || (isStylus && tool == Tool.ERASER) -> {
+                        beginErase(id, bx, by, eraserScreenRadius / zoom)
                     }
+                    // القلم بيكتب
                     isStylus -> {
                         if (stylusId == -1) {
                             realPressure = true
                             stylusIsFinger = false
                             stylusId = id
-                            startStroke(cX(x), cY(y), e.getPressure(i), e.eventTime)
+                            startStroke(bx, by, e.getPressure(i), e.eventTime)
                         }
                     }
+                    // كف اليد كبير: بيمسح
                     major >= palmSize -> {
-                        if (eraseId == -1) {
-                            eraseId = id
-                            startErase(cX(x), cY(y), (major / 2f) / zoom)
-                        }
+                        beginErase(id, bx, by, (major / 2f) / zoom)
                     }
+                    // إصبعين صغيرين: تكبير وتحريك
                     bothSmall && !gesture && (stylusId == -1 || stylusIsFinger) -> {
                         if (stylusIsFinger) cancelFingerStroke()
                         beginGesture(e)
                     }
+                    // إصبع واحد في وضع الممحاة: بيمسح
+                    !gesture && stylusId == -1 && eraseId == -1 && e.pointerCount == 1 && tool == Tool.ERASER -> {
+                        beginErase(id, bx, by, fingerEraseRadius / zoom)
+                    }
+                    // إصبع واحد في وضع القلم: بيكتب
                     !gesture && stylusId == -1 && e.pointerCount == 1 -> {
                         realPressure = false
                         stylusIsFinger = true
                         stylusId = id
-                        startStroke(cX(x), cY(y), 0.7f, e.eventTime)
+                        startStroke(bx, by, 0.7f, e.eventTime)
                     }
                 }
             }
@@ -799,7 +821,7 @@ class DrawView(context: Context) : View(context) {
                 for (i in 0 until e.pointerCount) {
                     val id = e.getPointerId(i)
                     when {
-                        id == stylusId -> {
+                        !gesture && id == stylusId -> {
                             for (h in 0 until e.historySize) {
                                 addPoint(
                                     cX(e.getHistoricalX(i, h)), cY(e.getHistoricalY(i, h)),
@@ -808,7 +830,7 @@ class DrawView(context: Context) : View(context) {
                             }
                             addPoint(cX(e.getX(i)), cY(e.getY(i)), e.getPressure(i), e.eventTime)
                         }
-                        id == eraseId -> {
+                        !gesture && id == eraseId -> {
                             val r = eraseRadius
                             for (h in 0 until e.historySize) {
                                 eraseTo(cX(e.getHistoricalX(i, h)), cY(e.getHistoricalY(i, h)), r)
