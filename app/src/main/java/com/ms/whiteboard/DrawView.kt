@@ -13,18 +13,20 @@ import android.view.MotionEvent
 import android.view.View
 import java.util.Random
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 
-enum class Pen { INK, PENCIL, MARKER, HIGHLIGHTER, BRUSH }
+// الأقلام: الأولانية الخمسة الأولى كانت موجودة، والجديد بيتضاف في الآخر عشان الحفظ القديم ميتلخبطش
+enum class Pen { INK, PENCIL, MARKER, HIGHLIGHTER, BRUSH, FEATHER, NEON, STRIPED }
 
 class DrawView(context: Context) : View(context) {
 
     var onChanged: (() -> Unit)? = null
     var onHistoryChanged: (() -> Unit)? = null
     var onZoomChanged: ((Float) -> Unit)? = null
-    // بيتنده لما الدقة تتغير بعد التكبير، عشان الصفحة تتعاد رسمها بدقة أعلى
     var onZoomSettled: ((Float) -> Unit)? = null
 
     var underlay: Bitmap? = null
@@ -33,7 +35,6 @@ class DrawView(context: Context) : View(context) {
             invalidate()
         }
 
-    // كل عملية تراجع: خطوط اتضافت وخطوط اتشالت
     private class Action(val added: MutableList<Stroke>, val removed: MutableList<Stroke>)
     private val undoStack = ArrayList<Action>()
     private val redoStack = ArrayList<Action>()
@@ -44,9 +45,7 @@ class DrawView(context: Context) : View(context) {
     private var bmpScale = 1f
     private var bitmap: Bitmap? = null
     private var bmpCanvas: Canvas? = null
-    private val seg = Path()
-    private val hlPath = Path()
-    private var hlActive = false
+    private val path = Path()
     private val dirty = RectF()
     private var hasDirty = false
 
@@ -76,9 +75,16 @@ class DrawView(context: Context) : View(context) {
     var pen = Pen.INK
         private set
 
+    // ألوان افتراضية زي المنصة
     private val colors = intArrayOf(
-        0xFF000000.toInt(), 0xFF37474F.toInt(), 0xFF1E88E5.toInt(),
-        0xFFFFEB3B.toInt(), 0xFF212121.toInt()
+        0xFF0F172A.toInt(), // حبر
+        0xFF334155.toInt(), // رصاص
+        0xFFDC2626.toInt(), // ماركر عريض
+        0xFF8B5CF6.toInt(), // تظليل
+        0xFF0F172A.toInt(), // بروش
+        0xFF0F172A.toInt(), // ريشة
+        0xFF22D3EE.toInt(), // نيون
+        0xFF2563EB.toInt()  // مخطط
     )
     private val sizes = floatArrayOf(0.6f, 1f, 1.6f, 2.4f)
     private var sizeIndex = 1
@@ -86,6 +92,7 @@ class DrawView(context: Context) : View(context) {
 
     private val strokes = ArrayList<Stroke>()
     private var inkStroke: Stroke? = null
+    private var painter: Painter? = null
     private var coordW = 0
     private var coordH = 0
     private val pencilShaders = HashMap<Int, BitmapShader>()
@@ -103,19 +110,40 @@ class DrawView(context: Context) : View(context) {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
+    private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.SQUARE
+        strokeJoin = Paint.Join.BEVEL
+    }
     private val hlPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.SQUARE
         strokeJoin = Paint.Join.ROUND
     }
+    private val featherPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.BUTT
+    }
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        color = 0xFFFFFFFF.toInt()
+    }
+    private val stripeOver = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val cursorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.5f * density
         color = 0xAA94A3B8.toInt()
     }
 
-    // ---- الممحاة (بتقص الخطوط بالمسافة، زي المنصة) ----
+    // ---- الممحاة (بتقص الخطوط بالمسافة) ----
     private val eraserScreenRadius = 16f * density
     private var eraseAction: Action? = null
     private var eraseRadius = 0f
@@ -125,15 +153,63 @@ class DrawView(context: Context) : View(context) {
     private var pendingRebuild = false
     private var lastRebuild = 0L
 
-    // الخط الحالي: بالقلم أو بالصبع
     private var stylusId = -1
     private var stylusIsFinger = false
     private var eraseId = -1
     private var realPressure = true
-    private var sx = 0f; private var sy = 0f
-    private var mx = 0f; private var my = 0f
-    private var sw = 0f
     private var lastT = 0L
+
+    // ---- المرسوم حالياً: بيكتب قلم ----
+    // كل قلم ليه طريقة رسم، والخط المحفوظ بيترسم بنفس الطريقة بالظبط
+    private inner class Painter(val pen: Pen, val col: Int) {
+        var sx = 0f
+        var sy = 0f
+        var mx = 0f
+        var my = 0f
+        var penW = 0f
+        var acc = 0f
+        val strokePath = Path()
+
+        fun begin(c: Canvas, x: Float, y: Float, w: Float) {
+            sx = x; sy = y; mx = x; my = y
+            penW = w
+            acc = 0f
+            if (pen == Pen.HIGHLIGHTER) {
+                strokePath.reset()
+                strokePath.moveTo(x, y)
+                strokePath.lineTo(x + 0.01f, y)
+            } else {
+                drawSeg(c, pen, col, acc, x, y, x, y, x, y, w)
+            }
+        }
+
+        fun step(c: Canvas, x: Float, y: Float, target: Float, k: Float) {
+            val midX = (x + sx) / 2f
+            val midY = (y + sy) / 2f
+            val w = penW * (1f - k) + target * k
+            if (pen == Pen.HIGHLIGHTER) {
+                strokePath.quadTo(sx, sy, midX, midY)
+            } else {
+                drawSeg(c, pen, col, acc, mx, my, sx, sy, midX, midY, w)
+            }
+            acc += hypot(midX - mx, midY - my)
+            mx = midX; my = midY
+            sx = x; sy = y
+            penW = w
+        }
+
+        fun end(c: Canvas) {
+            if (pen == Pen.HIGHLIGHTER) {
+                strokePath.lineTo(sx, sy)
+                hlPaint.color = col
+                hlPaint.strokeWidth = penW
+                c.drawPath(strokePath, hlPaint)
+                strokePath.reset()
+            } else {
+                drawSeg(c, pen, col, acc, mx, my, (mx + sx) / 2f, (my + sy) / 2f, sx, sy, penW)
+            }
+        }
+    }
 
     // ---- واجهة للشريط ----
     fun selectPen(p: Pen) {
@@ -195,7 +271,6 @@ class DrawView(context: Context) : View(context) {
         ty = ty.coerceIn(height * (1f - zoom), 0f)
     }
 
-    // نعيد رسم الـ bitmap بالدقة الجديدة بعد ما التكبير يخلص
     private fun settleZoom() {
         if (coordW <= 0) return
         val target = zoom.coerceIn(1f, maxBmpScale)
@@ -213,7 +288,7 @@ class DrawView(context: Context) : View(context) {
         val old = ArrayList(strokes)
         strokes.clear()
         inkStroke = null
-        hlActive = false
+        painter = null
         bitmap?.eraseColor(Color.TRANSPARENT)
         record(emptyList(), old)
         invalidate()
@@ -286,7 +361,6 @@ class DrawView(context: Context) : View(context) {
         rebuildBitmap()
     }
 
-    // نرسم كل الخطوط من جديد بالدقة الحالية
     private fun rebuildBitmap(sc: Float = bmpScale) {
         if (coordW <= 0 || coordH <= 0) return
         bmpScale = sc
@@ -343,9 +417,15 @@ class DrawView(context: Context) : View(context) {
         bitmap?.let {
             canvas.drawBitmap(it, null, RectF(0f, 0f, coordW.toFloat(), coordH.toFloat()), bitmapPaint)
         }
-        if (hlActive) canvas.drawPath(hlPath, hlPaint)
 
-        // دايرة الممحاة وهي بتمسح
+        // معاينة التظليل وهو بيتكتب
+        val pt = painter
+        if (pt != null && pt.pen == Pen.HIGHLIGHTER) {
+            hlPaint.color = pt.col
+            hlPaint.strokeWidth = pt.penW
+            canvas.drawPath(pt.strokePath, hlPaint)
+        }
+
         if (showCursor) {
             cursorPaint.strokeWidth = 1.5f * density / zoom
             canvas.drawCircle(ex, ey, eraseRadius, cursorPaint)
@@ -365,18 +445,75 @@ class DrawView(context: Context) : View(context) {
         BitmapShader(bm, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
     }
 
-    private fun paintFor(p: Pen, color: Int, width: Float): Paint = when (p) {
-        Pen.PENCIL -> pencilPaint.apply {
-            shader = pencilShader(color)
-            strokeWidth = width
-        }
-        Pen.HIGHLIGHTER -> hlPaint.apply {
-            this.color = color
-            strokeWidth = width
-        }
-        else -> inkPaint.apply {
-            this.color = color
-            strokeWidth = width
+    private fun isLight(c: Int): Boolean {
+        val r = Color.red(c) / 255f
+        val g = Color.green(c) / 255f
+        val b = Color.blue(c) / 255f
+        return 0.299f * r + 0.587f * g + 0.114f * b > 0.7f
+    }
+
+    // رسم قطعة واحدة من الخط حسب نوع القلم
+    private fun drawSeg(
+        c: Canvas, p: Pen, color: Int, acc: Float,
+        x0: Float, y0: Float, cx: Float, cy: Float, x1: Float, y1: Float, w: Float
+    ) {
+        path.reset()
+        path.moveTo(x0, y0)
+        path.quadTo(cx, cy, x1, y1)
+        when (p) {
+            Pen.PENCIL -> {
+                pencilPaint.shader = pencilShader(color)
+                pencilPaint.strokeWidth = w
+                c.drawPath(path, pencilPaint)
+            }
+            Pen.MARKER -> {
+                markerPaint.color = color
+                markerPaint.alpha = 235
+                markerPaint.strokeWidth = w
+                c.drawPath(path, markerPaint)
+            }
+            Pen.FEATHER -> {
+                // سن مايل: الخط بيطلع عريض في اتجاه ورفيع في التاني
+                featherPaint.color = color
+                featherPaint.strokeWidth = max(1f, w * 0.3f)
+                val ux = cos(-0.6f)
+                val uy = sin(-0.6f)
+                for (k in -3..3) {
+                    val off = (k / 3f) * w * 0.9f
+                    c.save()
+                    c.translate(ux * off, uy * off)
+                    c.drawPath(path, featherPaint)
+                    c.restore()
+                }
+            }
+            Pen.NEON -> {
+                glowPaint.color = color
+                glowPaint.strokeWidth = w * 1.2f
+                glowPaint.setShadowLayer(w * 1.6f, 0f, 0f, color)
+                c.drawPath(path, glowPaint)
+                corePaint.strokeWidth = max(1f, w * 0.4f)
+                c.drawPath(path, corePaint)
+            }
+            Pen.STRIPED -> {
+                inkPaint.color = color
+                inkPaint.strokeWidth = w
+                c.drawPath(path, inkPaint)
+                // شرطات بلون متباين بتتكرر على طول الخط
+                val period = max(4f, w * 3.7f)
+                if ((acc % period) < period * 0.6f) {
+                    stripeOver.color = if (isLight(color)) 0xFFF59E0B.toInt() else 0xFFF8FAFC.toInt()
+                    stripeOver.strokeWidth = max(1.5f, w * 0.47f)
+                    c.drawPath(path, stripeOver)
+                }
+            }
+            Pen.HIGHLIGHTER -> {
+                // بيتعمل في Painter.end
+            }
+            else -> {
+                inkPaint.color = color
+                inkPaint.strokeWidth = w
+                c.drawPath(path, inkPaint)
+            }
         }
     }
 
@@ -386,9 +523,12 @@ class DrawView(context: Context) : View(context) {
         return when (p) {
             Pen.INK -> base * (0.35f + q)
             Pen.PENCIL -> base * 0.6f * (0.6f + 0.8f * q)
-            Pen.MARKER -> base * 2.4f
+            Pen.MARKER -> base * 2.6f
             Pen.HIGHLIGHTER -> base * 4.5f
             Pen.BRUSH -> base * 2.4f * (0.2f + 0.9f * q) * speedF
+            Pen.FEATHER -> base * (0.9f + 0.5f * q)
+            Pen.NEON -> base * (1.0f + 0.3f * q)
+            Pen.STRIPED -> base * 1.7f
         }
     }
 
@@ -419,64 +559,36 @@ class DrawView(context: Context) : View(context) {
         strokes.add(s)
         inkStroke = s
         record(listOf(s), emptyList())
-        sx = x; sy = y; mx = x; my = y
         lastT = t
-        sw = widthFor(pr, 1f, p0)
-        val paint = paintFor(p0, color, sw)
-        if (p0 == Pen.HIGHLIGHTER) {
-            hlActive = true
-            hlPath.reset()
-            hlPath.moveTo(x, y)
-            hlPath.lineTo(x + 0.01f, y)
-        } else {
-            bmpCanvas?.drawPoint(x, y, paint)
-        }
-        s.add(x, y, sw)
-        addDirty(x, y, sw)
+        val w = widthFor(pr, 1f, p0)
+        val pt = Painter(p0, color)
+        bmpCanvas?.let { pt.begin(it, x, y, w) }
+        painter = pt
+        s.add(x, y, w)
+        addDirty(x, y, w + 4f)
     }
 
     private fun addPoint(x: Float, y: Float, pr: Float, t: Long) {
         val s = inkStroke ?: return
-        val p0 = s.pen
-        val midX = (x + sx) / 2f
-        val midY = (y + sy) / 2f
+        val pt = painter ?: return
         val dt = max(1L, t - lastT).toFloat()
-        val speedDp = hypot(x - sx, y - sy) * zoom / dt / density
+        val speedDp = hypot(x - pt.sx, y - pt.sy) * zoom / dt / density
         val speedF = (1.3f - speedDp * 0.5f).coerceIn(0.3f, 1.3f)
-        val target = widthFor(pr, speedF, p0)
-        val k = if (p0 == Pen.BRUSH) 0.3f else 0.5f
-        val w = sw * (1f - k) + target * k
-        if (p0 == Pen.HIGHLIGHTER) {
-            hlPath.quadTo(sx, sy, midX, midY)
-        } else {
-            seg.reset()
-            seg.moveTo(mx, my)
-            seg.quadTo(sx, sy, midX, midY)
-            bmpCanvas?.drawPath(seg, paintFor(p0, s.color, w))
-        }
-        val pad = w + 2f
-        addDirty(mx, my, pad); addDirty(sx, sy, pad); addDirty(midX, midY, pad)
-        mx = midX; my = midY
-        sx = x; sy = y
-        sw = w
+        val target = widthFor(pr, speedF, s.pen)
+        val k = if (s.pen == Pen.BRUSH) 0.3f else 0.5f
+        val px = pt.sx
+        val py = pt.sy
+        bmpCanvas?.let { pt.step(it, x, y, target, k) }
+        addDirty(px, py, target + 6f)
+        addDirty(x, y, target + 6f)
         lastT = t
         s.add(x, y, target)
     }
 
     private fun endStroke() {
-        val s = inkStroke ?: return
-        if (s.pen == Pen.HIGHLIGHTER) {
-            hlPath.lineTo(sx, sy)
-            bmpCanvas?.drawPath(hlPath, paintFor(s.pen, s.color, sw))
-            hlPath.reset()
-            hlActive = false
-        } else {
-            seg.reset()
-            seg.moveTo(mx, my)
-            seg.lineTo(sx, sy)
-            bmpCanvas?.drawPath(seg, paintFor(s.pen, s.color, sw))
-        }
-        addDirty(mx, my, sw + 2f); addDirty(sx, sy, sw + 2f)
+        val pt = painter
+        if (pt != null) bmpCanvas?.let { pt.end(it) }
+        painter = null
         inkStroke = null
         onChanged?.invoke()
     }
@@ -490,8 +602,7 @@ class DrawView(context: Context) : View(context) {
             onHistoryChanged?.invoke()
         }
         inkStroke = null
-        hlActive = false
-        hlPath.reset()
+        painter = null
         stylusId = -1
         stylusIsFinger = false
         rebuildBitmap()
@@ -511,7 +622,6 @@ class DrawView(context: Context) : View(context) {
         eraseTo(x, y, r)
     }
 
-    // نمشي على الخط بين آخر نقطة والنقطة الجديدة عشان مفيش فراغات
     private fun eraseTo(x: Float, y: Float, r: Float) {
         val dist = hypot(x - ex, y - ey)
         val steps = max(1, min(40, (dist / (r * 0.5f)).toInt()))
@@ -522,14 +632,11 @@ class DrawView(context: Context) : View(context) {
         ex = x
         ey = y
         eraseRadius = r
-        ex = x
-        ey = y
         showCursor = true
         if (pendingRebuild && System.currentTimeMillis() - lastRebuild > 30L) rebuildBitmap()
         invalidate()
     }
 
-    // بيقص أي خط داخل الدايرة، والجزء اللي برا بيفضل خط لوحده
     private fun cutStrokes(cx: Float, cy: Float, r: Float) {
         val act = eraseAction ?: return
         val snapshot = ArrayList(strokes)
@@ -566,7 +673,6 @@ class DrawView(context: Context) : View(context) {
             if (last != null && last.size / 3 >= 2) pieces.add(last)
 
             strokes.remove(s)
-            // لو الخط ده كان اتضاف في نفس العملية، نشيله من الإضافات بس
             if (!act.added.remove(s)) act.removed.add(s)
             strokes.addAll(pieces)
             act.added.addAll(pieces)
@@ -586,66 +692,26 @@ class DrawView(context: Context) : View(context) {
         invalidate()
     }
 
-    // ---- إعادة رسم خط محفوظ ----
+    // ---- إعادة رسم خط محفوظ بنفس طريقة الرسم المباشر ----
     private fun drawStroke(c: Canvas, s: Stroke) {
         if (s.erase) return
         val n = s.size / 3
         if (n == 0) return
         val d = s.data
-
-        if (n == 1) {
-            c.drawPoint(d[0], d[1], paintFor(s.pen, s.color, d[2]))
-            return
-        }
-
-        if (s.pen == Pen.HIGHLIGHTER) {
-            val path = Path()
-            var px0 = d[0]; var py0 = d[1]
-            path.moveTo(d[0], d[1])
-            for (i in 1 until n) {
-                val k = i * 3
-                val midX = (d[k] + px0) / 2f
-                val midY = (d[k + 1] + py0) / 2f
-                path.quadTo(px0, py0, midX, midY)
-                px0 = d[k]; py0 = d[k + 1]
-            }
-            path.lineTo(px0, py0)
-            c.drawPath(path, paintFor(s.pen, s.color, d[2]))
-            return
-        }
-
-        val kf = if (s.pen == Pen.BRUSH) 0.3f else 0.5f
-        var sx0 = d[0]; var sy0 = d[1]
-        var mx0 = d[0]; var my0 = d[1]
-        var sw0 = d[2]
-        val paint = paintFor(s.pen, s.color, sw0)
+        val k = if (s.pen == Pen.BRUSH) 0.3f else 0.5f
+        val p = Painter(s.pen, s.color)
+        p.begin(c, d[0], d[1], d[2])
         for (i in 1 until n) {
-            val k = i * 3
-            val x = d[k]; val y = d[k + 1]; val target = d[k + 2]
-            val midX = (x + sx0) / 2f
-            val midY = (y + sy0) / 2f
-            val w = sw0 * (1f - kf) + target * kf
-            seg.reset()
-            seg.moveTo(mx0, my0)
-            seg.quadTo(sx0, sy0, midX, midY)
-            paint.strokeWidth = w
-            c.drawPath(seg, paint)
-            mx0 = midX; my0 = midY
-            sx0 = x; sy0 = y
-            sw0 = w
+            val j = i * 3
+            p.step(c, d[j], d[j + 1], d[j + 2], k)
         }
-        seg.reset()
-        seg.moveTo(mx0, my0)
-        seg.lineTo(sx0, sy0)
-        paint.strokeWidth = sw0
-        c.drawPath(seg, paint)
+        p.end(c)
     }
 
     // ---- بداية إصبعين: تكبير وتحريك ----
     private fun beginGesture(e: MotionEvent) {
         if (eraseId != -1) {
             endErase()
-            eraseId = -1
         }
         gesture = true
         gIdA = e.getPointerId(0)
@@ -695,7 +761,6 @@ class DrawView(context: Context) : View(context) {
                         e.getTouchMajor(0) < palmSize && e.getTouchMajor(1) < palmSize
 
                 when {
-                    // طرف الممحاة في القلم، أو وضع الممحاة مفعّل بالقلم
                     isEraserTip || (isStylus && eraserMode) -> {
                         if (eraseId == -1) {
                             eraseId = id
@@ -710,7 +775,6 @@ class DrawView(context: Context) : View(context) {
                             startStroke(cX(x), cY(y), e.getPressure(i), e.eventTime)
                         }
                     }
-                    // مساحة كبيرة زي الإيد: تمسح
                     major >= palmSize -> {
                         if (eraseId == -1) {
                             eraseId = id
