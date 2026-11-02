@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -46,7 +47,7 @@ class MainActivity : Activity() {
     private var paperStyle = PaperStyle.GRID
     private var paperColor = 0xFFFFFFFF.toInt()
 
-    // الظاهر في الشريط، والباقي في زرار +
+    // الأقلام الظاهرة في الشريط، والباقي في زرار +
     private val visible = mutableListOf(Pen.INK, Pen.FEATHER, Pen.HIGHLIGHTER, Pen.NEON)
     private val hidden = mutableListOf(Pen.MARKER, Pen.PENCIL, Pen.STRIPED)
 
@@ -83,6 +84,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         Theme.load(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        hideSystemBars()
 
         projectId = intent.getStringExtra("pid") ?: "first"
         store = BoardStore(ProjectStore.boardFile(this, projectId))
@@ -134,6 +136,30 @@ class MainActivity : Activity() {
         rebuildDock()
     }
 
+    // الشاشة كاملة دايماً: بنخفي شريط الحالة وشريط التنقل
+    @Suppress("DEPRECATION")
+    private fun hideSystemBars() {
+        window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+    }
+
+    // بعد ما الشاشة تاخد فوكس تاني (مثلاً بعد نافذة أو الرجوع من تطبيق تاني) نرجّع الوضع الكامل
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
+    }
+
     override fun onPause() {
         super.onPause()
         saveNow()
@@ -162,13 +188,13 @@ class MainActivity : Activity() {
         applyPaper()
     }
 
-    // لون الخطوط بيتحسب من لون الورقة: فاتح على الورق الفاتح، وفاتح شوية على الداكن
+    // لون الخطوط بيتحسب من لون الورقة
     private fun gridFor(c: Int): Int {
         val lum = 0.299f * Color.red(c) + 0.587f * Color.green(c) + 0.114f * Color.blue(c)
         return if (lum > 128f) 0x1F0F172A else 0x2EFFFFFF
     }
 
-    // ---- الشريط العلوي ----
+    // ---- الشريط العلوي: رجوع، عنوان، تراجع/إعادة، وضع ----
     private fun topBar(): LinearLayout {
         val name = ProjectStore.list(this).firstOrNull { it.id == projectId }?.name ?: "مشروع"
         undoIcon = GlyphView(this, GlyphView.UNDO).apply { setOnClickListener { draw.undo() } }
@@ -299,10 +325,12 @@ class MainActivity : Activity() {
         setOnClickListener { showCustomColor() }
     }
 
+    // الألوان: خانتين في كل صف أو عمود حسب اتجاه الشريط
     private fun swatchGrid(items: List<View>): LinearLayout {
         val outer = LinearLayout(this).apply {
             orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
         }
         val innerOrient = if (vertical) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
         var i = 0
@@ -328,7 +356,7 @@ class MainActivity : Activity() {
         setOnClickListener { onTap() }
     }
 
-    // ---- محتوى الشريط: 4 مجموعات ----
+    // ---- محتوى الشريط العائم: 4 مجموعات، أو قلم ممحاة لو مطوي ----
     private fun rebuildDock() {
         dock.removeAllViews()
         dock.orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
@@ -336,6 +364,9 @@ class MainActivity : Activity() {
         penIcons.clear()
         penWraps.clear()
         swatches.clear()
+
+        eraserWrap.setOnClickListener { activateEraser() }
+        eraserIcon.setOnClickListener { activateEraser() }
 
         val shown = if (bar.collapsed) listOf(draw.pen) else visible
         val penItems = ArrayList<View>()
@@ -387,8 +418,6 @@ class MainActivity : Activity() {
         dock.addView(group(listOf(swatchGrid(items))))
 
         // مجموعة الأدوات: ممحاة، وحجم، ومسح
-        eraserWrap.setOnClickListener { activateEraser() }
-        eraserIcon.setOnClickListener { activateEraser() }
         val sizeLabels = arrayOf("S", "M", "L", "XL")
         val sizeBtn = toolBtn(sizeLabels[sizeIdx], Theme.TEXT) { }
         sizeBtn.setOnClickListener {
