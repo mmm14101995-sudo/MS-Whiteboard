@@ -14,6 +14,7 @@ import android.graphics.Shader
 import android.view.MotionEvent
 import android.view.View
 import java.util.Random
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -25,8 +26,9 @@ class DrawView(context: Context) : View(context) {
     var onChanged: (() -> Unit)? = null
     var onHistoryChanged: (() -> Unit)? = null
     var onZoomChanged: ((Float) -> Unit)? = null
+    // بيتنده لما الدقة تتغير بعد التكبير، عشان الصفحة تتعاد رسمها بدقة أعلى
+    var onZoomSettled: ((Float) -> Unit)? = null
 
-    // صورة خلفية (صفحة PDF مثلاً) بتتعرض مضبوطة في النص، والرسم فوقها
     var underlay: Bitmap? = null
         set(v) {
             field = v
@@ -39,6 +41,9 @@ class DrawView(context: Context) : View(context) {
     val canUndo: Boolean get() = undoStack.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
 
+    // الـ bitmap بيتعمل بدقة أعلى من الشاشة لما تكبّر، لحد الحد ده (عشان الذاكرة)
+    private val maxBmpScale = 2.5f
+    private var bmpScale = 1f
     private var bitmap: Bitmap? = null
     private var bmpCanvas: Canvas? = null
     private val seg = Path()
@@ -52,12 +57,12 @@ class DrawView(context: Context) : View(context) {
     var penWidth = 7f * density
     var eraserMode = false
 
-    // ---- التكبير والتحريك ----
+    // ---- التكبير والتصغير ----
     var zoom = 1f
         private set
     private var tx = 0f
     private var ty = 0f
-    private val minZoom = 1f
+    private val minZoom = 0.5f
     private val maxZoom = 5f
 
     private var gesture = false
@@ -113,7 +118,6 @@ class DrawView(context: Context) : View(context) {
     }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
-    // الخط الحالي: بالقلم أو بالصبع
     private var stylusId = -1
     private var stylusIsFinger = false
     private var eraseId = -1
@@ -145,7 +149,7 @@ class DrawView(context: Context) : View(context) {
         invalidate()
     }
 
-    // ---- التكبير ----
+    // ---- التكبير والتصغير ----
     fun zoomIn() = zoomBy(1.25f)
     fun zoomOut() = zoomBy(0.8f)
 
@@ -155,8 +159,8 @@ class DrawView(context: Context) : View(context) {
 
     fun resetZoom() {
         zoom = 1f
-        tx = 0f
-        ty = 0f
+        clampPan()
+        settleZoom()
         invalidate()
         onZoomChanged?.invoke(zoom)
     }
@@ -169,18 +173,30 @@ class DrawView(context: Context) : View(context) {
         tx = cx - ox * nz
         ty = cy - oy * nz
         clampPan()
+        settleZoom()
         invalidate()
         onZoomChanged?.invoke(zoom)
     }
 
+    // لما تصغّر: السبورة بتبقى في النص. لما تكبّر: ما نسيبهاش تطلع بره الحدود
     private fun clampPan() {
         if (zoom <= 1f) {
-            tx = 0f
-            ty = 0f
+            tx = width * (1f - zoom) / 2f
+            ty = height * (1f - zoom) / 2f
             return
         }
         tx = tx.coerceIn(width * (1f - zoom), 0f)
         ty = ty.coerceIn(height * (1f - zoom), 0f)
+    }
+
+    // نعيد رسم الـ bitmap بالدقة الجديدة بعد ما التكبير يخلص
+    private fun settleZoom() {
+        if (coordW <= 0) return
+        val target = zoom.coerceIn(1f, maxBmpScale)
+        if (abs(target - bmpScale) > 0.05f) {
+            rebuildBitmap(target)
+            onZoomSettled?.invoke(target)
+        }
     }
 
     private fun cX(x: Float) = (x - tx) / zoom
@@ -225,7 +241,7 @@ class DrawView(context: Context) : View(context) {
     }
 
     private fun afterHistory() {
-        if (width > 0 && height > 0) layoutTo(width, height)
+        if (coordW > 0 && coordH > 0) rebuildBitmap()
         invalidate()
         onChanged?.invoke()
         onHistoryChanged?.invoke()
@@ -262,11 +278,24 @@ class DrawView(context: Context) : View(context) {
         }
         coordW = w
         coordH = h
-        val nb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        rebuildBitmap()
+    }
+
+    // نرسم كل الخطوط من جديد بالدقة الحالية
+    private fun rebuildBitmap(sc: Float = bmpScale) {
+        if (coordW <= 0 || coordH <= 0) return
+        bmpScale = sc
+        val nb = Bitmap.createBitmap(
+            (coordW * sc).toInt().coerceAtLeast(1),
+            (coordH * sc).toInt().coerceAtLeast(1),
+            Bitmap.Config.ARGB_8888
+        )
         val nc = Canvas(nb)
+        nc.scale(sc, sc)
         for (s in strokes) drawStroke(nc, s)
         bitmap = nb
         bmpCanvas = nc
+        invalidate()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -274,10 +303,13 @@ class DrawView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(paperColor)
+        // المحيط بلون الثيم، والصفحة نفسها داخل مستطيل السبورة
+        canvas.drawColor(Theme.BG)
         canvas.save()
         canvas.translate(tx, ty)
         canvas.scale(zoom, zoom)
+        canvas.clipRect(0f, 0f, coordW.toFloat(), coordH.toFloat())
+        canvas.drawColor(paperColor)
 
         val u = underlay
         if (u != null) {
@@ -302,7 +334,9 @@ class DrawView(context: Context) : View(context) {
             }
         }
 
-        bitmap?.let { canvas.drawBitmap(it, 0f, 0f, bitmapPaint) }
+        bitmap?.let {
+            canvas.drawBitmap(it, null, RectF(0f, 0f, coordW.toFloat(), coordH.toFloat()), bitmapPaint)
+        }
         if (hlActive) canvas.drawPath(hlPath, hlPaint)
         canvas.restore()
     }
@@ -453,8 +487,7 @@ class DrawView(context: Context) : View(context) {
         hlPath.reset()
         stylusId = -1
         stylusIsFinger = false
-        if (width > 0 && height > 0) layoutTo(width, height)
-        invalidate()
+        rebuildBitmap()
     }
 
     // ---- الممحاة ----
@@ -663,7 +696,10 @@ class DrawView(context: Context) : View(context) {
                     eraseId = -1
                     onChanged?.invoke()
                 }
-                if (gesture && (id == gIdA || id == gIdB)) gesture = false
+                if (gesture && (id == gIdA || id == gIdB)) {
+                    gesture = false
+                    settleZoom()
+                }
             }
 
             MotionEvent.ACTION_CANCEL -> {
@@ -672,7 +708,10 @@ class DrawView(context: Context) : View(context) {
                 stylusIsFinger = false
                 eraseId = -1
                 eraseStroke = null
-                gesture = false
+                if (gesture) {
+                    gesture = false
+                    settleZoom()
+                }
                 onChanged?.invoke()
             }
         }
