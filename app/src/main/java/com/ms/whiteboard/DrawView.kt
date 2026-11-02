@@ -7,8 +7,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.graphics.Shader
 import android.view.MotionEvent
@@ -35,13 +33,13 @@ class DrawView(context: Context) : View(context) {
             invalidate()
         }
 
-    private class Action(val added: List<Stroke>, val removed: List<Stroke>)
+    // كل عملية تراجع: خطوط اتضافت وخطوط اتشالت
+    private class Action(val added: MutableList<Stroke>, val removed: MutableList<Stroke>)
     private val undoStack = ArrayList<Action>()
     private val redoStack = ArrayList<Action>()
     val canUndo: Boolean get() = undoStack.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
 
-    // الـ bitmap بيتعمل بدقة أعلى من الشاشة لما تكبّر، لحد الحد ده (عشان الذاكرة)
     private val maxBmpScale = 2.5f
     private var bmpScale = 1f
     private var bitmap: Bitmap? = null
@@ -88,7 +86,6 @@ class DrawView(context: Context) : View(context) {
 
     private val strokes = ArrayList<Stroke>()
     private var inkStroke: Stroke? = null
-    private var eraseStroke: Stroke? = null
     private var coordW = 0
     private var coordH = 0
     private val pencilShaders = HashMap<Int, BitmapShader>()
@@ -111,13 +108,24 @@ class DrawView(context: Context) : View(context) {
         strokeCap = Paint.Cap.SQUARE
         strokeJoin = Paint.Join.ROUND
     }
-    private val erasePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
-    }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val cursorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.5f * density
+        color = 0xAA94A3B8.toInt()
+    }
 
+    // ---- الممحاة (بتقص الخطوط بالمسافة، زي المنصة) ----
+    private val eraserScreenRadius = 16f * density
+    private var eraseAction: Action? = null
+    private var eraseRadius = 0f
+    private var ex = 0f
+    private var ey = 0f
+    private var showCursor = false
+    private var pendingRebuild = false
+    private var lastRebuild = 0L
+
+    // الخط الحالي: بالقلم أو بالصبع
     private var stylusId = -1
     private var stylusIsFinger = false
     private var eraseId = -1
@@ -126,7 +134,6 @@ class DrawView(context: Context) : View(context) {
     private var mx = 0f; private var my = 0f
     private var sw = 0f
     private var lastT = 0L
-    private var ex = 0f; private var ey = 0f
 
     // ---- واجهة للشريط ----
     fun selectPen(p: Pen) {
@@ -178,7 +185,6 @@ class DrawView(context: Context) : View(context) {
         onZoomChanged?.invoke(zoom)
     }
 
-    // لما تصغّر: السبورة بتبقى في النص. لما تكبّر: ما نسيبهاش تطلع بره الحدود
     private fun clampPan() {
         if (zoom <= 1f) {
             tx = width * (1f - zoom) / 2f
@@ -207,7 +213,6 @@ class DrawView(context: Context) : View(context) {
         val old = ArrayList(strokes)
         strokes.clear()
         inkStroke = null
-        eraseStroke = null
         hlActive = false
         bitmap?.eraseColor(Color.TRANSPARENT)
         record(emptyList(), old)
@@ -217,7 +222,7 @@ class DrawView(context: Context) : View(context) {
 
     // ---- التراجع والإعادة ----
     private fun record(added: List<Stroke>, removed: List<Stroke>) {
-        undoStack.add(Action(added, removed))
+        undoStack.add(Action(ArrayList(added), ArrayList(removed)))
         redoStack.clear()
         onHistoryChanged?.invoke()
     }
@@ -295,6 +300,8 @@ class DrawView(context: Context) : View(context) {
         for (s in strokes) drawStroke(nc, s)
         bitmap = nb
         bmpCanvas = nc
+        pendingRebuild = false
+        lastRebuild = System.currentTimeMillis()
         invalidate()
     }
 
@@ -303,7 +310,6 @@ class DrawView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        // المحيط بلون الثيم، والصفحة نفسها داخل مستطيل السبورة
         canvas.drawColor(Theme.BG)
         canvas.save()
         canvas.translate(tx, ty)
@@ -338,6 +344,12 @@ class DrawView(context: Context) : View(context) {
             canvas.drawBitmap(it, null, RectF(0f, 0f, coordW.toFloat(), coordH.toFloat()), bitmapPaint)
         }
         if (hlActive) canvas.drawPath(hlPath, hlPaint)
+
+        // دايرة الممحاة وهي بتمسح
+        if (showCursor) {
+            cursorPaint.strokeWidth = 1.5f * density / zoom
+            canvas.drawCircle(ex, ey, eraseRadius, cursorPaint)
+        }
         canvas.restore()
     }
 
@@ -378,11 +390,6 @@ class DrawView(context: Context) : View(context) {
             Pen.HIGHLIGHTER -> base * 4.5f
             Pen.BRUSH -> base * 2.4f * (0.2f + 0.9f * q) * speedF
         }
-    }
-
-    private fun eraseSize(major: Float): Float {
-        val base = if (eraserMode) max(penWidth * 4f, major) else major
-        return base / zoom
     }
 
     private fun addDirty(x: Float, y: Float, pad: Float) {
@@ -490,40 +497,101 @@ class DrawView(context: Context) : View(context) {
         rebuildBitmap()
     }
 
-    // ---- الممحاة ----
-    private fun startErase(x: Float, y: Float, size: Float) {
-        val s = Stroke(pen, 0, true)
-        strokes.add(s)
-        eraseStroke = s
-        record(listOf(s), emptyList())
-        ex = x; ey = y
-        eraseTo(x, y, size)
+    // ---- الممحاة: بتقص الخطوط اللي جوه الدايرة ----
+    private fun startErase(x: Float, y: Float, r: Float) {
+        val act = Action(ArrayList(), ArrayList())
+        undoStack.add(act)
+        redoStack.clear()
+        eraseAction = act
+        eraseRadius = r
+        ex = x
+        ey = y
+        showCursor = true
+        onHistoryChanged?.invoke()
+        eraseTo(x, y, r)
     }
 
-    private fun eraseTo(x: Float, y: Float, size: Float) {
-        erasePaint.strokeWidth = size
-        bmpCanvas?.drawLine(ex, ey, x, y, erasePaint)
-        val pad = size / 2f + 2f
-        addDirty(ex, ey, pad); addDirty(x, y, pad)
-        ex = x; ey = y
-        eraseStroke?.add(x, y, size)
+    // نمشي على الخط بين آخر نقطة والنقطة الجديدة عشان مفيش فراغات
+    private fun eraseTo(x: Float, y: Float, r: Float) {
+        val dist = hypot(x - ex, y - ey)
+        val steps = max(1, min(40, (dist / (r * 0.5f)).toInt()))
+        for (i in 1..steps) {
+            val t = i / steps.toFloat()
+            cutStrokes(ex + (x - ex) * t, ey + (y - ey) * t, r)
+        }
+        ex = x
+        ey = y
+        eraseRadius = r
+        ex = x
+        ey = y
+        showCursor = true
+        if (pendingRebuild && System.currentTimeMillis() - lastRebuild > 30L) rebuildBitmap()
+        invalidate()
+    }
+
+    // بيقص أي خط داخل الدايرة، والجزء اللي برا بيفضل خط لوحده
+    private fun cutStrokes(cx: Float, cy: Float, r: Float) {
+        val act = eraseAction ?: return
+        val snapshot = ArrayList(strokes)
+        for (s in snapshot) {
+            if (s.erase) continue
+            val n = s.size / 3
+            val d = s.data
+            var hit = false
+            for (i in 0 until n) {
+                val k = i * 3
+                if (hypot(d[k] - cx, d[k + 1] - cy) < r + d[k + 2] / 2f) { hit = true; break }
+            }
+            if (!hit) continue
+
+            val pieces = ArrayList<Stroke>()
+            var cur: Stroke? = null
+            for (i in 0 until n) {
+                val k = i * 3
+                val inside = hypot(d[k] - cx, d[k + 1] - cy) < r + d[k + 2] / 2f
+                if (inside) {
+                    val c = cur
+                    if (c != null && c.size / 3 >= 2) pieces.add(c)
+                    cur = null
+                } else {
+                    var c = cur
+                    if (c == null) {
+                        c = Stroke(s.pen, s.color, false)
+                        cur = c
+                    }
+                    c.add(d[k], d[k + 1], d[k + 2])
+                }
+            }
+            val last = cur
+            if (last != null && last.size / 3 >= 2) pieces.add(last)
+
+            strokes.remove(s)
+            // لو الخط ده كان اتضاف في نفس العملية، نشيله من الإضافات بس
+            if (!act.added.remove(s)) act.removed.add(s)
+            strokes.addAll(pieces)
+            act.added.addAll(pieces)
+            pendingRebuild = true
+        }
+    }
+
+    private fun endErase() {
+        val act = eraseAction ?: return
+        if (act.added.isEmpty() && act.removed.isEmpty()) undoStack.remove(act)
+        eraseAction = null
+        showCursor = false
+        eraseId = -1
+        rebuildBitmap()
+        onHistoryChanged?.invoke()
+        onChanged?.invoke()
+        invalidate()
     }
 
     // ---- إعادة رسم خط محفوظ ----
     private fun drawStroke(c: Canvas, s: Stroke) {
+        if (s.erase) return
         val n = s.size / 3
         if (n == 0) return
         val d = s.data
-
-        if (s.erase) {
-            for (i in 0 until n) {
-                val k = i * 3
-                erasePaint.strokeWidth = d[k + 2]
-                if (i == 0) c.drawLine(d[0], d[1], d[0], d[1], erasePaint)
-                else c.drawLine(d[k - 3], d[k - 2], d[k], d[k + 1], erasePaint)
-            }
-            return
-        }
 
         if (n == 1) {
             c.drawPoint(d[0], d[1], paintFor(s.pen, s.color, d[2]))
@@ -576,9 +644,8 @@ class DrawView(context: Context) : View(context) {
     // ---- بداية إصبعين: تكبير وتحريك ----
     private fun beginGesture(e: MotionEvent) {
         if (eraseId != -1) {
-            eraseStroke = null
+            endErase()
             eraseId = -1
-            onChanged?.invoke()
         }
         gesture = true
         gIdA = e.getPointerId(0)
@@ -618,7 +685,9 @@ class DrawView(context: Context) : View(context) {
                 val i = e.actionIndex
                 val id = e.getPointerId(i)
                 if (e.actionMasked == MotionEvent.ACTION_DOWN) requestUnbufferedDispatch(e)
-                val isStylus = e.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS
+                val tool = e.getToolType(i)
+                val isStylus = tool == MotionEvent.TOOL_TYPE_STYLUS
+                val isEraserTip = tool == MotionEvent.TOOL_TYPE_ERASER
                 val major = e.getTouchMajor(i)
                 val x = e.getX(i)
                 val y = e.getY(i)
@@ -626,23 +695,26 @@ class DrawView(context: Context) : View(context) {
                         e.getTouchMajor(0) < palmSize && e.getTouchMajor(1) < palmSize
 
                 when {
+                    // طرف الممحاة في القلم، أو وضع الممحاة مفعّل بالقلم
+                    isEraserTip || (isStylus && eraserMode) -> {
+                        if (eraseId == -1) {
+                            eraseId = id
+                            startErase(cX(x), cY(y), eraserScreenRadius / zoom)
+                        }
+                    }
                     isStylus -> {
-                        if (eraserMode) {
-                            if (eraseId == -1) {
-                                eraseId = id
-                                startErase(cX(x), cY(y), eraseSize(major))
-                            }
-                        } else if (stylusId == -1) {
+                        if (stylusId == -1) {
                             realPressure = true
                             stylusIsFinger = false
                             stylusId = id
                             startStroke(cX(x), cY(y), e.getPressure(i), e.eventTime)
                         }
                     }
+                    // مساحة كبيرة زي الإيد: تمسح
                     major >= palmSize -> {
                         if (eraseId == -1) {
                             eraseId = id
-                            startErase(cX(x), cY(y), eraseSize(major))
+                            startErase(cX(x), cY(y), (major / 2f) / zoom)
                         }
                     }
                     bothSmall && !gesture && (stylusId == -1 || stylusIsFinger) -> {
@@ -673,13 +745,11 @@ class DrawView(context: Context) : View(context) {
                             addPoint(cX(e.getX(i)), cY(e.getY(i)), e.getPressure(i), e.eventTime)
                         }
                         id == eraseId -> {
+                            val r = eraseRadius
                             for (h in 0 until e.historySize) {
-                                eraseTo(
-                                    cX(e.getHistoricalX(i, h)), cY(e.getHistoricalY(i, h)),
-                                    eraseSize(e.getHistoricalTouchMajor(i, h))
-                                )
+                                eraseTo(cX(e.getHistoricalX(i, h)), cY(e.getHistoricalY(i, h)), r)
                             }
-                            eraseTo(cX(e.getX(i)), cY(e.getY(i)), eraseSize(e.getTouchMajor(i)))
+                            eraseTo(cX(e.getX(i)), cY(e.getY(i)), r)
                         }
                     }
                 }
@@ -692,9 +762,7 @@ class DrawView(context: Context) : View(context) {
                     stylusId = -1
                     stylusIsFinger = false
                 } else if (id == eraseId) {
-                    eraseStroke = null
-                    eraseId = -1
-                    onChanged?.invoke()
+                    endErase()
                 }
                 if (gesture && (id == gIdA || id == gIdB)) {
                     gesture = false
@@ -706,8 +774,8 @@ class DrawView(context: Context) : View(context) {
                 if (inkStroke != null) endStroke()
                 stylusId = -1
                 stylusIsFinger = false
+                if (eraseId != -1) endErase()
                 eraseId = -1
-                eraseStroke = null
                 if (gesture) {
                     gesture = false
                     settleZoom()
