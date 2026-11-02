@@ -1,11 +1,9 @@
 package com.ms.whiteboard
 
-import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
@@ -17,68 +15,106 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.SeekBar
 import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.compose.ui.platform.ComposeView
+import com.ms.whiteboard.compose.ToolbarActions
+import com.ms.whiteboard.compose.ToolbarState
+import com.ms.whiteboard.compose.WhiteboardToolbar
 import java.util.concurrent.Executors
+import androidx.compose.ui.graphics.Color as ComposeColor
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
+
+    // وضع اللمس الحالي: قلم، ممحاة، إيد (تحريك)، تحديد
+    private enum class Mode { PEN, ERASER, HAND, SELECT }
 
     private lateinit var draw: DrawView
-    private lateinit var bar: FloatingBar
-    private lateinit var dock: LinearLayout
     private lateinit var store: BoardStore
     private lateinit var undoIcon: GlyphView
     private lateinit var redoIcon: GlyphView
-    private lateinit var eraserIcon: PenIconView
-    private lateinit var eraserWrap: FrameLayout
+    private lateinit var topBarView: LinearLayout
+    private lateinit var zoomBarView: LinearLayout
     private lateinit var zoomLabel: TextView
+    private lateinit var toolbarView: ComposeView
+    private val tb = ToolbarState()
+    private var mode = Mode.PEN
+    private var immersive = false
     private var projectId = "first"
     private val io = Executors.newSingleThreadExecutor()
     private var popup: PopupWindow? = null
-    private val vertical: Boolean get() = bar.vertical
-
-    private val penIcons = HashMap<Pen, PenIconView>()
-    private val penWraps = HashMap<Pen, FrameLayout>()
-    private val swatches = ArrayList<Pair<Int, View>>()
-    private var lastPen: Pen? = null
-    private var lastTap = 0L
-    private val penColors = IntArray(Pen.values().size)
     private val prefs by lazy { getSharedPreferences("pens", Context.MODE_PRIVATE) }
 
+    private val penColors = IntArray(Pen.values().size)
     private var sizeIdx = 1
+    private val sizeLabels = arrayOf("S", "M", "L", "XL")
     private var paperStyle = PaperStyle.GRID
     private var paperColor = 0xFFFFFFFF.toInt()
 
-    // الأقلام الظاهرة في الشريط، والباقي في زرار +
+    // الأقلام الأربعة الظاهرة في الشريط (برتقالي، أسود، بنفسجي، سماوي)، والباقي في زرار +
     private val visible = mutableListOf(Pen.INK, Pen.FEATHER, Pen.HIGHLIGHTER, Pen.NEON)
     private val hidden = mutableListOf(Pen.MARKER, Pen.PENCIL, Pen.STRIPED)
 
     private val dayPens = intArrayOf(
-        0xFF0F172A.toInt(), 0xFF334155.toInt(), 0xFFDC2626.toInt(), 0xFF8B5CF6.toInt(),
+        0xFFF97316.toInt(), 0xFF334155.toInt(), 0xFFDC2626.toInt(), 0xFF8B5CF6.toInt(),
         0xFF0F172A.toInt(), 0xFF0F172A.toInt(), 0xFF22D3EE.toInt(), 0xFF2563EB.toInt()
     )
     private val nightPens = intArrayOf(
-        0xFFF1F5F9.toInt(), 0xFFCBD5E1.toInt(), 0xFFF87171.toInt(), 0xFFA78BFA.toInt(),
+        0xFFFB923C.toInt(), 0xFFCBD5E1.toInt(), 0xFFF87171.toInt(), 0xFFA78BFA.toInt(),
         0xFFF1F5F9.toInt(), 0xFFF1F5F9.toInt(), 0xFF22D3EE.toInt(), 0xFF60A5FA.toInt()
     )
-    private val dayQuick = intArrayOf(0xFF000000.toInt(), 0xFFE53935.toInt(), 0xFF1E88E5.toInt(), 0xFF43A047.toInt(), 0xFFFFEB3B.toInt(), 0xFF8E24AA.toInt())
-    private val nightQuick = intArrayOf(0xFFFFFFFF.toInt(), 0xFFEF5350.toInt(), 0xFF38BDF8.toInt(), 0xFF66BB6A.toInt(), 0xFFFFEB3B.toInt(), 0xFFAB47BC.toInt())
-    private val dayPapers = intArrayOf(0xFFFFFFFF.toInt(), 0xFFFFF8E7.toInt(), 0xFFE8F5E9.toInt(), 0xFFE3F2FD.toInt(), 0xFFF5F3FF.toInt(), 0xFFF1F5F9.toInt())
-    private val nightPapers = intArrayOf(0xFF0F172A.toInt(), 0xFF1E293B.toInt(), 0xFF1C2A1E.toInt(), 0xFF1E1B2E.toInt(), 0xFF1F2933.toInt(), 0xFF111827.toInt())
     private val paletteColors = intArrayOf(
         0xFF0F172A.toInt(), 0xFF1E293B.toInt(), 0xFF475569.toInt(), 0xFF94A3B8.toInt(), 0xFFE2E8F0.toInt(), 0xFFFFFFFF.toInt(),
         0xFFDC2626.toInt(), 0xFFEF4444.toInt(), 0xFFF97316.toInt(), 0xFFF59E0B.toInt(), 0xFFFACC15.toInt(), 0xFF84CC16.toInt(),
         0xFF16A34A.toInt(), 0xFF10B981.toInt(), 0xFF14B8A6.toInt(), 0xFF06B6D4.toInt(), 0xFF0EA5E9.toInt(), 0xFF2563EB.toInt(),
         0xFF4F46E5.toInt(), 0xFF7C3AED.toInt(), 0xFFA855F7.toInt(), 0xFFEC4899.toInt(), 0xFFBE185D.toInt(), 0xFF78350F.toInt()
     )
+    private val dayPapers = intArrayOf(0xFFFFFFFF.toInt(), 0xFFFFF8E7.toInt(), 0xFFE8F5E9.toInt(), 0xFFE3F2FD.toInt(), 0xFFF5F3FF.toInt(), 0xFFF1F5F9.toInt())
+    private val nightPapers = intArrayOf(0xFF0F172A.toInt(), 0xFF1E293B.toInt(), 0xFF1C2A1E.toInt(), 0xFF1E1B2E.toInt(), 0xFF1F2933.toInt(), 0xFF111827.toInt())
 
     private fun dp(v: Int): Int = Theme.dp(this, v.toFloat())
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
-    private fun quickColors(): IntArray = if (Theme.dark) nightQuick else dayQuick
     private fun papers(): IntArray = if (Theme.dark) nightPapers else dayPapers
 
     // كل وضع (نهاري/ليلي) ليه ألوان أقلام وورق محفوظة لوحده
     private fun colorKey(i: Int): String = (if (Theme.dark) "n" else "d") + "c$i"
     private fun paperKey(): String = if (Theme.dark) "pcn" else "pcd"
+
+    // أفعال الشريط: كل زرار في الشريط بينادي هنا
+    private val actions = object : ToolbarActions {
+        override fun onPage() = showPaperPicker()
+        override fun onDrag(dx: Float, dy: Float) = moveToolbar(dx, dy)
+        override fun onToggleExpand() {
+            tb.expanded = !tb.expanded
+        }
+        override fun onClose() {
+            tb.visible = false
+        }
+        override fun onReopen() {
+            tb.visible = true
+        }
+        override fun onPenTap(index: Int) = choosePen(visible[index])
+        override fun onPenDoubleTap(index: Int) {
+            val p = visible[index]
+            choosePen(p)
+            showPalette()
+        }
+        override fun onMore() = showMore()
+        override fun onHand() = setMode(Mode.HAND)
+        override fun onEraser() = setMode(Mode.ERASER)
+        override fun onSelect() = setMode(Mode.SELECT)
+        override fun onFullscreen() {
+            immersive = !immersive
+            val vis = if (immersive) View.GONE else View.VISIBLE
+            topBarView.visibility = vis
+            zoomBarView.visibility = vis
+            tb.fullscreenOn = immersive
+        }
+        override fun onDeleteSelection() {
+            draw.deleteSelected()
+            syncToolbar()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,35 +141,36 @@ class MainActivity : Activity() {
         draw.onChanged = { saveNow() }
         draw.onZoomChanged = { z -> zoomLabel.text = "${(z * 100).toInt()}%" }
         draw.onHistoryChanged = { updateHistoryIcons() }
+        draw.onSelectionChanged = { syncToolbar() }
         store.read()?.let { draw.restore(it) }
 
-        eraserIcon = PenIconView(this, PenIconView.ERASER)
-        eraserWrap = wrap(eraserIcon)
-        bar = FloatingBar(this)
-        dock = bar.body
+        toolbarView = ComposeView(this).apply {
+            setContent { WhiteboardToolbar(state = tb, actions = actions) }
+        }
+        topBarView = topBar()
+        zoomBarView = zoomBar()
 
         val root = FrameLayout(this)
         root.addView(draw, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(
-            bar,
+            toolbarView,
             FrameLayout.LayoutParams(WRAP, WRAP, Gravity.END or Gravity.CENTER_VERTICAL)
-                .apply { setMargins(0, dp(70), dp(10), dp(12)) }
+                .apply { setMargins(0, dp(60), dp(10), dp(12)) }
         )
         root.addView(
-            topBar(),
+            topBarView,
             FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
                 .apply { setMargins(0, dp(8), 0, 0) }
         )
         root.addView(
-            zoomBar(),
+            zoomBarView,
             FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.START)
                 .apply { setMargins(dp(12), 0, dp(12), dp(12)) }
         )
         setContentView(root)
 
-        bar.onChanged = { rebuildDock() }
         updateHistoryIcons()
-        rebuildDock()
+        syncToolbar()
     }
 
     // الشاشة كاملة دايماً: بنخفي شريط الحالة وشريط التنقل
@@ -175,6 +212,52 @@ class MainActivity : Activity() {
         if (!::undoIcon.isInitialized) return
         undoIcon.alpha = if (draw.canUndo) 1f else 0.3f
         redoIcon.alpha = if (draw.canRedo) 1f else 0.3f
+    }
+
+    // ---- الشريط العائم (Compose) ----
+    private fun moveToolbar(dx: Float, dy: Float) {
+        val v = toolbarView
+        val parent = v.parent as? View ?: return
+        val minX = -v.left.toFloat()
+        val maxX = (parent.width - v.right).toFloat()
+        val minY = -v.top.toFloat()
+        val maxY = (parent.height - v.bottom).toFloat()
+        val nx = v.translationX + dx
+        val ny = v.translationY + dy
+        v.translationX = if (maxX >= minX) nx.coerceIn(minX, maxX) else nx
+        v.translationY = if (maxY >= minY) ny.coerceIn(minY, maxY) else ny
+    }
+
+    private fun choosePen(p: Pen) {
+        draw.selectPen(p)
+        setMode(Mode.PEN)
+    }
+
+    private fun setMode(m: Mode) {
+        mode = m
+        draw.eraserMode = m == Mode.ERASER
+        draw.panMode = m == Mode.HAND
+        draw.selectMode = m == Mode.SELECT
+        if (m != Mode.SELECT) draw.clearSelection()
+        syncToolbar()
+    }
+
+    // بنقرأ الحالة الحالية ونحطها في الشريط
+    private fun syncToolbar() {
+        tb.slotColors = visible.map { ComposeColor(penColors[it.ordinal]) }
+        tb.activeSlot = if (mode == Mode.PEN) visible.indexOf(draw.pen) else -1
+        tb.eraserOn = mode == Mode.ERASER
+        tb.handOn = mode == Mode.HAND
+        tb.selectOn = mode == Mode.SELECT
+        tb.selectionCount = draw.selectionCount
+    }
+
+    private fun applyColor(c: Int) {
+        val p = draw.pen
+        penColors[p.ordinal] = c
+        prefs.edit().putInt(colorKey(p.ordinal), c).apply()
+        draw.setColor(c)
+        setMode(Mode.PEN)
     }
 
     // ---- الصفحة (نوعها ولونها) ----
@@ -268,248 +351,53 @@ class MainActivity : Activity() {
     private fun sepLp(): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(dp(1), dp(22)).apply { setMargins(dp(4), 0, dp(4), 0) }
 
-    private fun wrap(child: View): FrameLayout = FrameLayout(this).apply {
-        addView(child, FrameLayout.LayoutParams(MATCH, MATCH))
-    }
-
-    // مقاس ثابت وهامش لأي عنصر قبل ما يتضاف للمجموعة
-    private fun <T : View> sized(v: T, w: Int, h: Int, m: Int = 2): T {
-        v.layoutParams = LinearLayout.LayoutParams(dp(w), dp(h)).apply { setMargins(dp(m), dp(m), dp(m), dp(m)) }
-        return v
-    }
-
-    // المجموعة الواحدة زي .bgrp في المنصة: خلفية شفافة، وحد خفيف، وزوايا مستديرة
-    private fun group(items: List<View>): LinearLayout {
-        val g = LinearLayout(this).apply {
-            orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            background = if (Theme.dark) {
-                Theme.box(this@MainActivity, 0x14FFFFFF, 14f, 0x1FFFFFFF, 1f)
-            } else {
-                Theme.box(this@MainActivity, 0x14000000, 14f, 0x1F000000, 1f)
-            }
-            setPadding(dp(3), dp(3), dp(3), dp(3))
-        }
-        for (v in items) {
-            (v.parent as? ViewGroup)?.removeView(v)
-            if (v.layoutParams == null) sized(v, 40, 40)
-            g.addView(v)
-        }
-        return g
-    }
-
-    private fun selectedBg(): GradientDrawable = GradientDrawable(
-        GradientDrawable.Orientation.LEFT_RIGHT,
-        intArrayOf(0x4038BDF8, 0x40FACC15)
-    ).apply { cornerRadius = dp(12).toFloat() }
-
-    private fun swatchBg(c: Int, selected: Boolean) = Theme.box(
-        this, c, 7f,
-        if (selected) Theme.ACCENT else Theme.BORDER,
-        if (selected) 2.5f else 1f
-    )
-
-    private fun customBtn(): View = TextView(this).apply {
-        text = "+"
-        textSize = 15f
-        setTextColor(0xFFFFFFFF.toInt())
-        gravity = Gravity.CENTER
-        setTypeface(typeface, Typeface.BOLD)
-        background = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0xFF38BDF8.toInt(), 0xFFFACC15.toInt(), 0xFFEF4444.toInt())
-        ).apply {
-            cornerRadius = dp(7).toFloat()
-            setStroke(dp(1), Theme.BORDER)
-        }
-        setOnClickListener { showCustomColor() }
-    }
-
-    // الألوان: خانتين في كل صف أو عمود حسب اتجاه الشريط
-    private fun swatchGrid(items: List<View>): LinearLayout {
-        val outer = LinearLayout(this).apply {
-            orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
-        }
-        val innerOrient = if (vertical) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-        var i = 0
-        while (i < items.size) {
-            val line = LinearLayout(this).apply {
-                orientation = innerOrient
-                gravity = Gravity.CENTER
-            }
-            for (k in i until minOf(i + 2, items.size)) line.addView(sized(items[k], 26, 26, 3))
-            outer.addView(line)
-            i += 2
-        }
-        return outer
-    }
-
-    private fun toolBtn(label: String, color: Int, onTap: () -> Unit): TextView = TextView(this).apply {
+    // ---- نوافذ منبثقة ----
+    private fun menuRow(label: String, color: Int, action: () -> Unit): TextView = TextView(this).apply {
         text = label
-        textSize = 12f
+        textSize = 13f
         setTextColor(color)
         gravity = Gravity.CENTER
         setTypeface(typeface, Typeface.BOLD)
+        setPadding(dp(10), dp(8), dp(10), dp(8))
         background = Theme.box(this@MainActivity, 0x1AFFFFFF, 10f)
-        setOnClickListener { onTap() }
+        setOnClickListener {
+            popup?.dismiss()
+            action()
+        }
     }
 
-    // ---- محتوى الشريط العائم: 4 مجموعات، أو قلم ممحاة لو مطوي ----
-    private fun rebuildDock() {
-        dock.removeAllViews()
-        dock.orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-        dock.gravity = Gravity.CENTER
-        penIcons.clear()
-        penWraps.clear()
-        swatches.clear()
-
-        eraserWrap.setOnClickListener { activateEraser() }
-        eraserIcon.setOnClickListener { activateEraser() }
-
-        val shown = if (bar.collapsed) listOf(draw.pen) else visible
-        val penItems = ArrayList<View>()
-        for (p in shown) {
-            val ic = PenIconView(this, p.ordinal).apply {
-                color = penColors[p.ordinal]
-                setOnClickListener {
-                    if (bar.collapsed) bar.setCollapsed(false) else onPenTap(p)
-                }
-            }
-            penIcons[p] = ic
-            val w = wrap(ic)
-            penWraps[p] = w
-            penItems.add(sized(w, 40, 56, 2))
+    // زرار +: الأقلام المخفية، والحجم، ومسح السبورة
+    private fun showMore() {
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
         }
-
-        if (bar.collapsed) {
-            penItems.add(sized(eraserWrap, 40, 56, 2))
-            dock.addView(group(penItems))
-            refresh()
-            return
+        for (p in hidden) {
+            val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
+            ic.setOnClickListener { pickFromMore(p) }
+            list.addView(ic, LinearLayout.LayoutParams(dp(40), dp(56)).apply { setMargins(dp(3), dp(2), dp(3), dp(2)) })
         }
-
-        // مجموعة الأقلام + زرار الباقي
-        penItems.add(
-            sized(
-                TextView(this).apply {
-                    text = "+"
-                    textSize = 20f
-                    setTextColor(Theme.MUTED)
-                    gravity = Gravity.CENTER
-                    background = Theme.box(this@MainActivity, 0x1AFFFFFF, 0f, oval = true)
-                    setOnClickListener { showMore() }
-                },
-                30, 30, 3
-            )
-        )
-        dock.addView(group(penItems))
-
-        // مجموعة الألوان
-        val items = ArrayList<View>()
-        for (c in quickColors()) {
-            val cell = View(this)
-            cell.setOnClickListener { applyColor(c) }
-            swatches.add(Pair(c, cell))
-            items.add(cell)
-        }
-        items.add(customBtn())
-        dock.addView(group(listOf(swatchGrid(items))))
-
-        // مجموعة الأدوات: ممحاة، وحجم، ومسح
-        val sizeLabels = arrayOf("S", "M", "L", "XL")
-        val sizeBtn = toolBtn(sizeLabels[sizeIdx], Theme.TEXT) { }
-        sizeBtn.setOnClickListener {
+        val margin = LinearLayout.LayoutParams(dp(110), WRAP).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
+        list.addView(menuRow("الحجم: ${sizeLabels[sizeIdx]}", Theme.TEXT) {
             draw.cycleSize()
             sizeIdx = (sizeIdx + 1) % sizeLabels.size
-            sizeBtn.text = sizeLabels[sizeIdx]
-        }
-        val clearBtn = toolBtn("مسح", Theme.DANGER) { confirmClear() }
-        dock.addView(group(listOf(sized(eraserWrap, 40, 40, 2), sized(sizeBtn, 40, 40, 2), sized(clearBtn, 40, 40, 2))))
-
-        // مجموعة الصفحة: نوعها ولونها
-        val paperBtn = toolBtn("ورق", Theme.TEXT) { showPaperPicker() }
-        dock.addView(group(listOf(sized(paperBtn, 44, 40, 2))))
-
-        refresh()
+            showMore()
+        }, margin)
+        list.addView(menuRow("مسح السبورة", Theme.DANGER) { confirmClear() }, margin)
+        showPopup(list)
     }
 
-    private fun activateEraser() {
-        draw.eraserMode = true
-        refresh()
+    private fun pickFromMore(p: Pen) {
+        val old = visible[visible.size - 1]
+        visible[visible.size - 1] = p
+        hidden.remove(p)
+        hidden.add(old)
+        popup?.dismiss()
+        choosePen(p)
     }
 
-    private fun refresh() {
-        for ((p, w) in penWraps) w.background = if (!draw.eraserMode && draw.pen == p) selectedBg() else null
-        if (::eraserWrap.isInitialized) {
-            eraserWrap.background = if (draw.eraserMode) selectedBg() else null
-        }
-        val current = penColors[draw.pen.ordinal]
-        for ((c, v) in swatches) {
-            v.background = swatchBg(c, !draw.eraserMode && c == current)
-        }
-    }
-
-    private fun onPenTap(p: Pen) {
-        val now = System.currentTimeMillis()
-        val isDouble = lastPen == p && now - lastTap < 450L
-        lastPen = if (isDouble) null else p
-        lastTap = now
-        if (isDouble) showPalette(p) else {
-            draw.selectPen(p)
-            refresh()
-        }
-    }
-
-    private fun applyColor(c: Int) {
-        val p = draw.pen
-        penColors[p.ordinal] = c
-        prefs.edit().putInt(colorKey(p.ordinal), c).apply()
-        draw.setColor(c)
-        penIcons[p]?.color = c
-        draw.eraserMode = false
-        refresh()
-    }
-
-    private fun showCustomColor() {
-        val start = penColors[draw.pen.ordinal]
-        val preview = View(this).apply { background = Theme.box(this@MainActivity, start, 12f, Theme.BORDER, 1f) }
-        val seeks = listOf(
-            SeekBar(this).apply { max = 255; progress = Color.red(start) },
-            SeekBar(this).apply { max = 255; progress = Color.green(start) },
-            SeekBar(this).apply { max = 255; progress = Color.blue(start) }
-        )
-        fun picked(): Int = Color.rgb(seeks[0].progress, seeks[1].progress, seeks[2].progress)
-
-        val listener = object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                preview.background = Theme.box(this@MainActivity, picked(), 12f, Theme.BORDER, 1f)
-            }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-            override fun onStopTrackingTouch(sb: SeekBar?) {}
-        }
-        seeks.forEach { it.setOnSeekBarChangeListener(listener) }
-
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(6))
-            addView(preview, LinearLayout.LayoutParams(MATCH, dp(56)).apply { setMargins(0, 0, 0, dp(12)) })
-            seeks.forEach { addView(it) }
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("لون مخصص")
-            .setView(content)
-            .setPositiveButton("اختار") { _, _ -> applyColor(picked()) }
-            .setNegativeButton("إلغاء", null)
-            .show()
-    }
-
-    private fun showPalette(p: Pen) {
-        draw.selectPen(p)
-        refresh()
-
+    // لوحة الألوان للقلم الحالي (بالدبل تاب على القلم)
+    private fun showPalette() {
         val grid = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(10), dp(10), dp(10), dp(10))
@@ -529,31 +417,11 @@ class MainActivity : Activity() {
             }
             grid.addView(line)
         }
+        grid.addView(
+            menuRow("+ لون مخصص", Theme.TEXT) { showCustomColor() },
+            LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(dp(3), dp(8), dp(3), dp(3)) }
+        )
         showPopup(grid)
-    }
-
-    private fun showMore() {
-        if (hidden.isEmpty()) return
-        val list = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(6), dp(6), dp(6), dp(6))
-        }
-        for (p in hidden) {
-            val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
-            ic.setOnClickListener { pickFromMore(p) }
-            list.addView(ic, LinearLayout.LayoutParams(dp(40), dp(56)).apply { setMargins(dp(3), dp(2), dp(3), dp(2)) })
-        }
-        showPopup(list)
-    }
-
-    private fun pickFromMore(p: Pen) {
-        val old = visible[visible.size - 1]
-        visible[visible.size - 1] = p
-        hidden.remove(p)
-        hidden.add(old)
-        popup?.dismiss()
-        draw.selectPen(p)
-        rebuildDock()
     }
 
     // نافذة الصفحة: نوعها (فاضية، مربعات، مسطرة، نقط) ولونها
@@ -603,6 +471,40 @@ class MainActivity : Activity() {
         }
         box.addView(colorRow)
         showPopup(box)
+    }
+
+    private fun showCustomColor() {
+        val start = penColors[draw.pen.ordinal]
+        val preview = View(this).apply { background = Theme.box(this@MainActivity, start, 12f, Theme.BORDER, 1f) }
+        val seeks = listOf(
+            SeekBar(this).apply { max = 255; progress = Color.red(start) },
+            SeekBar(this).apply { max = 255; progress = Color.green(start) },
+            SeekBar(this).apply { max = 255; progress = Color.blue(start) }
+        )
+        fun picked(): Int = Color.rgb(seeks[0].progress, seeks[1].progress, seeks[2].progress)
+
+        val listener = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                preview.background = Theme.box(this@MainActivity, picked(), 12f, Theme.BORDER, 1f)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        }
+        seeks.forEach { it.setOnSeekBarChangeListener(listener) }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(6))
+            addView(preview, LinearLayout.LayoutParams(MATCH, dp(56)).apply { setMargins(0, 0, 0, dp(12)) })
+            seeks.forEach { addView(it) }
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("لون مخصص")
+            .setView(content)
+            .setPositiveButton("اختار") { _, _ -> applyColor(picked()) }
+            .setNegativeButton("إلغاء", null)
+            .show()
     }
 
     private fun showPopup(content: View) {
