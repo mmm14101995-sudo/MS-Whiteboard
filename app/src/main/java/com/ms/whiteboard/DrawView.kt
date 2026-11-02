@@ -22,6 +22,9 @@ import kotlin.math.sin
 // الأقلام: الترتيب ده محفوظ في الملفات، فمتغيرش ترتيبه
 enum class Pen { INK, PENCIL, MARKER, HIGHLIGHTER, BRUSH, FEATHER, NEON, STRIPED }
 
+// أنواع الصفحات
+enum class PaperStyle { BLANK, GRID, LINED, DOTS }
+
 class DrawView(context: Context) : View(context) {
 
     // الأداة الحالية: قلم أو ممحاة
@@ -109,7 +112,9 @@ class DrawView(context: Context) : View(context) {
     private val pencilShaders = HashMap<Int, BitmapShader>()
 
     private var paperColor = 0xFFFFFFFF.toInt()
+    private var paperStyle = PaperStyle.GRID
     private val gridPaint = Paint().apply { style = Paint.Style.STROKE; strokeWidth = density }
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
     private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -238,9 +243,16 @@ class DrawView(context: Context) : View(context) {
         return widthScale
     }
 
+    // لون الورقة ولون الخطوط
     fun setPaper(paper: Int, grid: Int) {
         paperColor = paper
         gridPaint.color = grid
+        dotPaint.color = grid
+        invalidate()
+    }
+
+    fun setPaperStyle(style: PaperStyle) {
+        paperStyle = style
         invalidate()
     }
 
@@ -412,18 +424,7 @@ class DrawView(context: Context) : View(context) {
             val t = (height - dh) / 2f
             canvas.drawBitmap(u, null, RectF(l, t, l + dw, t + dh), bitmapPaint)
         } else {
-            val clip = canvas.clipBounds
-            val step = 40f * density
-            var x = (clip.left / step).toInt() * step
-            while (x <= clip.right) {
-                canvas.drawLine(x, clip.top.toFloat(), x, clip.bottom.toFloat(), gridPaint)
-                x += step
-            }
-            var y = (clip.top / step).toInt() * step
-            while (y <= clip.bottom) {
-                canvas.drawLine(clip.left.toFloat(), y, clip.right.toFloat(), y, gridPaint)
-                y += step
-            }
+            drawPaper(canvas)
         }
 
         bitmap?.let {
@@ -443,6 +444,40 @@ class DrawView(context: Context) : View(context) {
             canvas.drawCircle(ex, ey, eraseRadius, cursorPaint)
         }
         canvas.restore()
+    }
+
+    // رسم الصفحة حسب نوعها (فاضية، مربعات، مسطرة، نقط)
+    private fun drawPaper(canvas: Canvas) {
+        if (paperStyle == PaperStyle.BLANK) return
+        val clip = canvas.clipBounds
+        val step = (if (paperStyle == PaperStyle.LINED) 32f else 40f) * density
+
+        if (paperStyle == PaperStyle.DOTS) {
+            val r = 1.4f * density
+            var y = (clip.top / step).toInt() * step
+            while (y <= clip.bottom) {
+                var x = (clip.left / step).toInt() * step
+                while (x <= clip.right) {
+                    canvas.drawCircle(x, y, r, dotPaint)
+                    x += step
+                }
+                y += step
+            }
+            return
+        }
+
+        if (paperStyle == PaperStyle.GRID) {
+            var x = (clip.left / step).toInt() * step
+            while (x <= clip.right) {
+                canvas.drawLine(x, clip.top.toFloat(), x, clip.bottom.toFloat(), gridPaint)
+                x += step
+            }
+        }
+        var y = (clip.top / step).toInt() * step
+        while (y <= clip.bottom) {
+            canvas.drawLine(clip.left.toFloat(), y, clip.right.toFloat(), y, gridPaint)
+            y += step
+        }
     }
 
     private fun pencilShader(c: Int): BitmapShader = pencilShaders.getOrPut(c) {
