@@ -39,14 +39,21 @@ class MainActivity : Activity() {
     private val swatches = ArrayList<Pair<Int, View>>()
     private var lastPen: Pen? = null
     private var lastTap = 0L
-    private var penColors = IntArray(5)
+    private val penColors = IntArray(Pen.values().size)
     private val prefs by lazy { getSharedPreferences("pens", Context.MODE_PRIVATE) }
 
-    private val visible = mutableListOf(Pen.INK, Pen.PENCIL, Pen.MARKER, Pen.HIGHLIGHTER)
-    private val hidden = mutableListOf(Pen.BRUSH)
+    // الظاهر في الشريط، والباقي في زرار +
+    private val visible = mutableListOf(Pen.INK, Pen.FEATHER, Pen.HIGHLIGHTER, Pen.NEON)
+    private val hidden = mutableListOf(Pen.MARKER, Pen.PENCIL, Pen.STRIPED)
 
-    private val dayPens = intArrayOf(0xFF000000.toInt(), 0xFF37474F.toInt(), 0xFF1E88E5.toInt(), 0xFFFFEB3B.toInt(), 0xFF212121.toInt())
-    private val nightPens = intArrayOf(0xFFF1F5F9.toInt(), 0xFFCBD5E1.toInt(), 0xFF38BDF8.toInt(), 0xFFFACC15.toInt(), 0xFFF1F5F9.toInt())
+    private val dayPens = intArrayOf(
+        0xFF0F172A.toInt(), 0xFF334155.toInt(), 0xFFDC2626.toInt(), 0xFF8B5CF6.toInt(),
+        0xFF0F172A.toInt(), 0xFF0F172A.toInt(), 0xFF22D3EE.toInt(), 0xFF2563EB.toInt()
+    )
+    private val nightPens = intArrayOf(
+        0xFFF1F5F9.toInt(), 0xFFCBD5E1.toInt(), 0xFFF87171.toInt(), 0xFFA78BFA.toInt(),
+        0xFFF1F5F9.toInt(), 0xFFF1F5F9.toInt(), 0xFF22D3EE.toInt(), 0xFF60A5FA.toInt()
+    )
     private val dayQuick = intArrayOf(0xFF000000.toInt(), 0xFFE53935.toInt(), 0xFF1E88E5.toInt(), 0xFF43A047.toInt(), 0xFFFFEB3B.toInt(), 0xFF8E24AA.toInt())
     private val nightQuick = intArrayOf(0xFFFFFFFF.toInt(), 0xFFEF5350.toInt(), 0xFF38BDF8.toInt(), 0xFF66BB6A.toInt(), 0xFFFFEB3B.toInt(), 0xFFAB47BC.toInt())
     private val paletteColors = intArrayOf(
@@ -72,7 +79,9 @@ class MainActivity : Activity() {
         projectId = intent.getStringExtra("pid") ?: "first"
         store = BoardStore(ProjectStore.boardFile(this, projectId))
 
-        penColors = IntArray(5) { i -> prefs.getInt(colorKey(i), (if (Theme.dark) nightPens else dayPens)[i]) }
+        for (i in penColors.indices) {
+            penColors[i] = prefs.getInt(colorKey(i), (if (Theme.dark) nightPens else dayPens)[i])
+        }
 
         draw = DrawView(this)
         draw.setPaper(Theme.PAPER, Theme.GRID)
@@ -227,14 +236,12 @@ class MainActivity : Activity() {
         if (vertical) LinearLayout.LayoutParams(dp(26), dp(1)).apply { setMargins(0, dp(6), 0, dp(6)) }
         else LinearLayout.LayoutParams(dp(1), dp(26)).apply { setMargins(dp(6), 0, dp(6), 0) }
 
-    // ---- خلية لون مربعة ----
     private fun swatchBg(c: Int, selected: Boolean) = Theme.box(
         this, c, 7f,
         if (selected) Theme.ACCENT else Theme.BORDER,
         if (selected) 2.5f else 1f
     )
 
-    // زرار اللون المخصص (مربع متدرج فيه +)
     private fun customBtn(): View = TextView(this).apply {
         text = "+"
         textSize = 15f
@@ -251,7 +258,6 @@ class MainActivity : Activity() {
         setOnClickListener { showCustomColor() }
     }
 
-    // الخلايا في صفين: صفين جنب بعض في الشريط الرأسي، وعمودين في الأفقي
     private fun swatchGrid(items: List<View>): LinearLayout {
         val outer = LinearLayout(this).apply {
             orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
@@ -284,7 +290,6 @@ class MainActivity : Activity() {
             refresh()
         }
 
-        // مضموم: القلم الحالي والممحاة بس
         val shown = if (bar.collapsed) listOf(draw.pen) else visible
         for (p in shown) {
             val ic = PenIconView(this, p.ordinal).apply { color = penColors[p.ordinal] }
@@ -352,7 +357,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // ضغطة = اختيار القلم، ضغطتين بسرعة = منتقي ألوان القلم
     private fun onPenTap(p: Pen) {
         val now = System.currentTimeMillis()
         val isDouble = lastPen == p && now - lastTap < 450L
@@ -374,7 +378,6 @@ class MainActivity : Activity() {
         refresh()
     }
 
-    // لون مخصص: 3 سلايدرز (أحمر وأخضر وأزرق) مع معاينة
     private fun showCustomColor() {
         val start = penColors[draw.pen.ordinal]
         val preview = View(this).apply { background = Theme.box(this@MainActivity, start, 12f, Theme.BORDER, 1f) }
