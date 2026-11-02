@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -34,6 +35,11 @@ class DrawView(context: Context) : View(context) {
     var onHistoryChanged: (() -> Unit)? = null
     var onZoomChanged: ((Float) -> Unit)? = null
     var onZoomSettled: ((Float) -> Unit)? = null
+    var onSelectionChanged: (() -> Unit)? = null
+
+    // أوضاع: تحريك الصفحة بالإيد، وتحديد الخطوط (بيتحكم فيهم الشريط)
+    var panMode = false
+    var selectMode = false
 
     var underlay: Bitmap? = null
         set(v) {
@@ -183,6 +189,26 @@ class DrawView(context: Context) : View(context) {
     private var eraseId = -1
     private var realPressure = true
     private var lastT = 0L
+
+    private var panning = false
+    private var panLastX = 0f
+    private var panLastY = 0f
+    private var selecting = false
+    private var selStartX = 0f
+    private var selStartY = 0f
+    private var selRect: RectF? = null
+    private val selected: MutableSet<Stroke> =
+        java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Stroke, Boolean>())
+    val selectionCount: Int get() = selected.size
+    private val selPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = 0xFF38BDF8.toInt()
+        pathEffect = DashPathEffect(floatArrayOf(10f, 6f), 0f)
+    }
+    private val selFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = 0x2238BDF8
+    }
 
     // ---- المرسوم حالياً ----
     // كل قلم ليه طريقة رسم، والخط المحفوظ بيترسم بنفس الطريقة بالظبط
@@ -483,6 +509,17 @@ class DrawView(context: Context) : View(context) {
         if (showCursor) {
             cursorPaint.strokeWidth = 1.5f * density / zoom
             canvas.drawCircle(ex, ey, eraseRadius, cursorPaint)
+        }
+        if (selected.isNotEmpty() || selRect != null) {
+            selPaint.strokeWidth = 1.5f * density / zoom
+            for (st in selected) {
+                val b = strokeBounds(st) ?: continue
+                canvas.drawRect(b, selPaint)
+            }
+            selRect?.let {
+                canvas.drawRect(it, selFill)
+                canvas.drawRect(it, selPaint)
+            }
         }
         canvas.restore()
     }
@@ -837,8 +874,121 @@ class DrawView(context: Context) : View(context) {
         onZoomChanged?.invoke(zoom)
     }
 
+    // ---- تحريك الصفحة بإصبع واحد (وضع الإيد) ----
+    private fun handlePan(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (e.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS || gesture) return false
+                panning = true
+                panLastX = e.x
+                panLastY = e.y
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!panning || e.pointerCount > 1) return false
+                tx += e.x - panLastX
+                ty += e.y - panLastY
+                panLastX = e.x
+                panLastY = e.y
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (panning) { panning = false; settleZoom() }
+                return false
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!panning) return false
+                panning = false
+                settleZoom()
+                return true
+            }
+        }
+        return false
+    }
+
+    // ---- تحديد الخطوط بمستطيل ----
+    private fun handleSelect(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (gesture) return false
+                selecting = true
+                selStartX = cX(e.x)
+                selStartY = cY(e.y)
+                selRect = null
+                if (selected.isNotEmpty()) { selected.clear(); onSelectionChanged?.invoke() }
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!selecting || e.pointerCount > 1) return false
+                val x = cX(e.x)
+                val y = cY(e.y)
+                selRect = RectF(min(selStartX, x), min(selStartY, y), max(selStartX, x), max(selStartY, y))
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (selecting) { selecting = false; selRect = null; invalidate() }
+                return false
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!selecting) return false
+                selecting = false
+                val r = selRect
+                selRect = null
+                if (r != null) {
+                    for (st in strokes) if (touches(st, r.left, r.top, r.right, r.bottom)) selected.add(st)
+                    onSelectionChanged?.invoke()
+                }
+                invalidate()
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun strokeBounds(st: Stroke): RectF? {
+        val n = st.size / 3
+        if (n == 0) return null
+        val d = st.data
+        var l = Float.MAX_VALUE; var t = Float.MAX_VALUE
+        var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
+        var maxW = 0f
+        for (i in 0 until n) {
+            val k = i * 3
+            l = min(l, d[k]); r = max(r, d[k])
+            t = min(t, d[k + 1]); b = max(b, d[k + 1])
+            maxW = max(maxW, d[k + 2])
+        }
+        val pad = maxW / 2f + 6f
+        return RectF(l - pad, t - pad, r + pad, b + pad)
+    }
+
+    // حذف الخطوط المحددة (بيتسجل في التراجع)
+    fun deleteSelected() {
+        val old = strokes.filter { selected.contains(it) }
+        if (old.isEmpty()) return
+        strokes.removeAll(old.toSet())
+        selected.clear()
+        record(emptyList(), old)
+        rebuildBitmap()
+        invalidate()
+        onChanged?.invoke()
+        onSelectionChanged?.invoke()
+    }
+
+    fun clearSelection() {
+        if (selected.isEmpty() && selRect == null) return
+        selected.clear()
+        selRect = null
+        invalidate()
+    }
+
     // ---- اللمس ----
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (panMode && handlePan(e)) { flushDirty(); return true }
+        if (selectMode && handleSelect(e)) { flushDirty(); return true }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val i = e.actionIndex
