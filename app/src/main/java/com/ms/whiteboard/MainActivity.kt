@@ -3,6 +3,8 @@ package com.ms.whiteboard
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
@@ -12,6 +14,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.PopupWindow
+import android.widget.SeekBar
 import android.widget.TextView
 import java.util.concurrent.Executors
 
@@ -145,7 +148,7 @@ class MainActivity : Activity() {
             text = name
             textSize = 14f
             setTextColor(Theme.TEXT)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTypeface(typeface, Typeface.BOLD)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             setPadding(dp(10), 0, dp(10), 0)
@@ -174,7 +177,7 @@ class MainActivity : Activity() {
             textSize = 12f
             setTextColor(Theme.TEXT)
             gravity = Gravity.CENTER
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTypeface(typeface, Typeface.BOLD)
             setPadding(dp(6), dp(6), dp(6), dp(6))
             setOnClickListener { draw.resetZoom() }
         }
@@ -224,9 +227,54 @@ class MainActivity : Activity() {
         if (vertical) LinearLayout.LayoutParams(dp(26), dp(1)).apply { setMargins(0, dp(6), 0, dp(6)) }
         else LinearLayout.LayoutParams(dp(1), dp(26)).apply { setMargins(dp(6), 0, dp(6), 0) }
 
+    // ---- خلية لون مربعة ----
+    private fun swatchBg(c: Int, selected: Boolean) = Theme.box(
+        this, c, 7f,
+        if (selected) Theme.ACCENT else Theme.BORDER,
+        if (selected) 2.5f else 1f
+    )
+
+    // زرار اللون المخصص (مربع متدرج فيه +)
+    private fun customBtn(): View = TextView(this).apply {
+        text = "+"
+        textSize = 15f
+        setTextColor(0xFFFFFFFF.toInt())
+        gravity = Gravity.CENTER
+        setTypeface(typeface, Typeface.BOLD)
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(0xFF38BDF8.toInt(), 0xFFFACC15.toInt(), 0xFFEF4444.toInt())
+        ).apply {
+            cornerRadius = dp(7).toFloat()
+            setStroke(dp(1), Theme.BORDER)
+        }
+        setOnClickListener { showCustomColor() }
+    }
+
+    // الخلايا في صفين: صفين جنب بعض في الشريط الرأسي، وعمودين في الأفقي
+    private fun swatchGrid(items: List<View>): LinearLayout {
+        val outer = LinearLayout(this).apply {
+            orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val innerOrient = if (vertical) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        var i = 0
+        while (i < items.size) {
+            val line = LinearLayout(this).apply {
+                orientation = innerOrient
+                gravity = Gravity.CENTER
+            }
+            for (k in i until minOf(i + 2, items.size)) line.addView(items[k], sizeLp(26, 26, 3))
+            outer.addView(line)
+            i += 2
+        }
+        return outer
+    }
+
     // ---- محتوى الشريط: مفرود أو مضموم ----
     private fun rebuildDock() {
         dock.removeAllViews()
+        dock.gravity = Gravity.CENTER
         penIcons.clear()
         penWraps.clear()
         swatches.clear()
@@ -268,12 +316,15 @@ class MainActivity : Activity() {
         )
         dock.addView(divider(), dividerLp())
 
+        val items = ArrayList<View>()
         for (c in quickColors()) {
-            val dot = View(this)
-            dot.setOnClickListener { applyColor(c) }
-            swatches.add(Pair(c, dot))
-            dock.addView(dot, sizeLp(24, 24, 5))
+            val cell = View(this)
+            cell.setOnClickListener { applyColor(c) }
+            swatches.add(Pair(c, cell))
+            items.add(cell)
         }
+        items.add(customBtn())
+        dock.addView(swatchGrid(items), LinearLayout.LayoutParams(WRAP, WRAP))
         dock.addView(divider(), dividerLp())
 
         dock.addView(eraserWrap, penLp())
@@ -297,11 +348,7 @@ class MainActivity : Activity() {
         eraserWrap.background = if (draw.eraserMode) selectedBg() else null
         val current = penColors[draw.pen.ordinal]
         for ((c, v) in swatches) {
-            v.background = if (!draw.eraserMode && c == current) {
-                Theme.box(this, c, 0f, Theme.ACCENT, 2.5f, oval = true)
-            } else {
-                Theme.box(this, c, 0f, Theme.BORDER, 1f, oval = true)
-            }
+            v.background = swatchBg(c, !draw.eraserMode && c == current)
         }
     }
 
@@ -325,6 +372,41 @@ class MainActivity : Activity() {
         penIcons[p]?.color = c
         draw.eraserMode = false
         refresh()
+    }
+
+    // لون مخصص: 3 سلايدرز (أحمر وأخضر وأزرق) مع معاينة
+    private fun showCustomColor() {
+        val start = penColors[draw.pen.ordinal]
+        val preview = View(this).apply { background = Theme.box(this@MainActivity, start, 12f, Theme.BORDER, 1f) }
+        val seeks = listOf(
+            SeekBar(this).apply { max = 255; progress = Color.red(start) },
+            SeekBar(this).apply { max = 255; progress = Color.green(start) },
+            SeekBar(this).apply { max = 255; progress = Color.blue(start) }
+        )
+        fun picked(): Int = Color.rgb(seeks[0].progress, seeks[1].progress, seeks[2].progress)
+
+        val listener = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                preview.background = Theme.box(this@MainActivity, picked(), 12f, Theme.BORDER, 1f)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        }
+        seeks.forEach { it.setOnSeekBarChangeListener(listener) }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(6))
+            addView(preview, LinearLayout.LayoutParams(MATCH, dp(56)).apply { setMargins(0, 0, 0, dp(12)) })
+            seeks.forEach { addView(it) }
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("لون مخصص")
+            .setView(content)
+            .setPositiveButton("اختار") { _, _ -> applyColor(picked()) }
+            .setNegativeButton("إلغاء", null)
+            .show()
     }
 
     private fun showPalette(p: Pen) {
