@@ -64,6 +64,8 @@ class PdfActivity : Activity() {
             setPaper(Theme.BG, 0)
             onChanged = { saveCurrent() }
             onHistoryChanged = { updateHistory() }
+            // لما تكبّر، نعيد رسم الصفحة بدقة أعلى
+            onZoomSettled = { s -> underlay = renderPage(page, s) }
         }
 
         pageLabel = TextView(this).apply {
@@ -188,7 +190,7 @@ class PdfActivity : Activity() {
     private fun loadPage(i: Int) {
         if (pageCount == 0) return
         page = i.coerceIn(0, pageCount - 1)
-        draw.underlay = renderPage(page)
+        draw.underlay = renderPage(page, 1f)
 
         val f = annotFile(page)
         val saved = if (f.exists()) f.readText() else null
@@ -203,11 +205,12 @@ class PdfActivity : Activity() {
         updateTools()
     }
 
-    private fun renderPage(index: Int): Bitmap? {
+    // scale = 1 للعرض العادي، وأكبر لما تكبّر عشان الصفحة تفضل واضحة
+    private fun renderPage(index: Int, scale: Float): Bitmap? {
         val r = renderer ?: return null
         synchronized(r) {
             val p = r.openPage(index)
-            val w = resources.displayMetrics.widthPixels
+            val w = (resources.displayMetrics.widthPixels * scale).toInt()
             val h = (w * p.height / p.width.toFloat()).toInt()
             val bm = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             bm.eraseColor(Color.WHITE)
